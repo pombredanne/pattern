@@ -1,4 +1,4 @@
-#### PATTERN | CACHE #################################################################################
+#### PATTERN | CACHE ###############################################################################
 # Copyright (c) 2010 University of Antwerp, Belgium
 # Author: Tom De Smedt <tom@organisms.be>
 # License: BSD (see LICENSE.txt for details).
@@ -9,29 +9,38 @@ try:
 except:
     import md5; md5=md5.new
 
-#### UNICODE #########################################################################################
+#### UNICODE #######################################################################################
     
-def decode_utf8(string):
-    """ Returns the given string as a unicode string (if possible).
+def decode_string(v, encoding="utf-8"):
+    """ Returns the given value as a Unicode string (if possible).
     """
-    if isinstance(string, str):
-        try: 
-            return string.decode("utf-8")
-        except:
-            return string
-    return unicode(string)
-    
-def encode_utf8(string):
-    """ Returns the given string as a Python byte string (if possible).
-    """
-    if isinstance(string, unicode):
-        try: 
-            return string.encode("utf-8")
-        except:
-            return string
-    return str(string)
+    if isinstance(encoding, basestring):
+        encoding = ((encoding,),) + (("windows-1252",), ("utf-8", "ignore"))
+    if isinstance(v, str):
+        for e in encoding:
+            try: return v.decode(*e)
+            except:
+                pass
+        return v
+    return unicode(v)
 
-#### CACHE ###########################################################################################
+def encode_string(v, encoding="utf-8"):
+    """ Returns the given value as a Python byte string (if possible).
+    """
+    if isinstance(encoding, basestring):
+        encoding = ((encoding,),) + (("windows-1252",), ("utf-8", "ignore"))
+    if isinstance(v, unicode):
+        for e in encoding:
+            try: return v.encode(*e)
+            except:
+                pass
+        return v
+    return str(v)
+
+decode_utf8 = decode_string
+encode_utf8 = encode_string
+
+#### CACHE #########################################################################################
 # Caching is implemented in URL.download(), which is used by all other downloaders.
 
 import os
@@ -41,7 +50,7 @@ import codecs
 import datetime
 
 try: 
-    MODULE = os.path.dirname(__file__)
+    MODULE = os.path.dirname(os.path.abspath(__file__))
 except:
     MODULE = ""
 
@@ -81,11 +90,7 @@ class Cache(object):
         return os.path.exists(self._hash(k))
     
     def __getitem__(self, k):
-        if k in self:
-            f = open(self._hash(k), "rb"); v=f.read().lstrip(codecs.BOM_UTF8)
-            f.close()
-            return decode_utf8(v)
-        raise KeyError, k
+        return self.get(k)
 
     def __setitem__(self, k, v):
         f = open(self._hash(k), "wb")
@@ -97,6 +102,19 @@ class Cache(object):
         try: os.unlink(self._hash(k))
         except OSError:
             pass
+
+    def get(self, k, unicode=True):
+        """ Returns the data stored with the given id.
+            With unicode=True, returns a Unicode string.
+        """
+        if k in self:
+            f = open(self._hash(k), "rb"); v=f.read().lstrip(codecs.BOM_UTF8)
+            f.close()
+            if unicode is True:
+                return decode_utf8(v)
+            else:
+                return v
+        raise KeyError, k
 
     def age(self, k):
         """ Returns the age of the cached item, in days.

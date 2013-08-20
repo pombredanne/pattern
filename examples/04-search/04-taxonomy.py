@@ -1,13 +1,13 @@
 import os, sys; sys.path.insert(0, os.path.join("..", ".."))
 
-from pattern.search import Pattern, Constraint, Classifier, taxonomy
-from pattern.en     import Sentence, parse
+from pattern.search import search, taxonomy, Classifier
+from pattern.en     import parsetree
 
 # The search module includes a Taxonomy class 
 # that can be used to define semantic word types.
 # For example, consider that you want to extract flower names from a text.
-# This would make patterns somewhat unwieldy, e.g.:
-# Pattern.fromstring("rose|lily|daisy|daffodil|begonia").
+# This would make search patterns somewhat unwieldy:
+# search("rose|lily|daisy|daffodil|begonia", txt).
 
 # A better approach is to use the taxonomy:
 for flower in ("rose", "lily", "daisy", "daffodil", "begonia"):
@@ -18,17 +18,14 @@ print taxonomy.parents("rose")
 print taxonomy.classify("rose") # Yields the most recently added parent.
 print
     
-# Taxonomy terms can be included in a pattern:
-p = Pattern([Constraint(taxa=["flower"])]) # or
-p = Pattern.fromstring("FLOWER")
-
-s = Sentence(parse("A field of white daffodils.", lemmata=True))
-m = p.search(s)
-print s
+# Taxonomy terms can be included in a pattern by using uppercase:
+t = parsetree("A field of white daffodils.", lemmata=True)
+m = search("FLOWER", t)
+print t
 print m
 print
 
-from pattern.search import search
+# Another example:
 taxonomy.append("chicken", type="food")
 taxonomy.append("chicken", type="bird")
 taxonomy.append("penguin", type="bird")
@@ -36,6 +33,7 @@ taxonomy.append("bird", type="animal")
 print taxonomy.parents("chicken")
 print taxonomy.children("animal", recursive=True)
 print search("FOOD", "I'm eating chicken.")
+print
 
 # The advantage is that the taxonomy can hold an entire hierarchy.
 # For example, "flower" could be classified as "organism".
@@ -48,10 +46,9 @@ print search("FOOD", "I'm eating chicken.")
 taxonomy.append("windows vista", type="operating system")
 taxonomy.append("ubuntu", type="operating system")
 
-s = Sentence(parse("Which do you like more, Windows Vista or Ubuntu?"))
-p = Pattern.fromstring("OPERATING_SYSTEM")
-m = p.search(s)
-print s
+t = parsetree("Which do you like more, Windows Vista, or Ubuntu?")
+m = search("OPERATING_SYSTEM", t)
+print t
 print m
 print m[0].constituents()
 print
@@ -60,7 +57,7 @@ print
 # but you can use a classifier to simulate this.
 # Classifiers are quite slow but useful in many ways.
 # For example, a classifier could be written to dynamically 
-# retrieve word types from WordNet.
+# retrieve word categories from WordNet.
 
 def find_parents(word):
     if word.startswith(("mac os", "windows", "ubuntu")):
@@ -68,10 +65,10 @@ def find_parents(word):
 c = Classifier(parents=find_parents)
 taxonomy.classifiers.append(c)
 
-s = Sentence(parse("I like Mac OS X 10.5 better than Windows XP or Ubuntu."))
-p = Pattern.fromstring("OPERATING_SYSTEM")
-m = p.search(s)
-print s
+t = parsetree("I like Mac OS X 10.5 better than Windows XP or Ubuntu.")
+m = search("OPERATING_SYSTEM", t)
+print t
 print m
 print m[0].constituents()
+print m[1].constituents()
 print

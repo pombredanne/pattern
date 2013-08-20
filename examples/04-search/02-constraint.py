@@ -1,13 +1,13 @@
 import os, sys; sys.path.insert(0, os.path.join("..", ".."))
 
 from pattern.search import search, Pattern, Constraint
-from pattern.en     import Sentence, parse
+from pattern.en     import parsetree
 
 # What we call a "search word" in example 01-search.py
 # is actually called a constraint, because it can contain different options.
 # Options are separated by "|".
 # The next search pattern retrieves words that are a noun OR an adjective:
-s = Sentence(parse("big white rabbit"))
+s = parsetree("big white rabbit")
 print search("NN|JJ", s)
 print
 
@@ -17,15 +17,15 @@ print search("JJ NN", s)
 print
 
 # Or a noun preceded by any number of adjectives:
-print search("(JJ)+ NN", s)
+print search("JJ?+ NN", s)
 print
 
 # Note: NN marks singular nouns, NNS marks plural nouns.
 # If you want to include both, use "NN*" as a constraint.
 # This works for NN*, VB*, JJ*, RB*.
 
-s = Sentence(parse("When I sleep the big white rabbit will stare at my feet."))
-m = search("rabbit stare at my", s)
+s = parsetree("When I sleep the big white rabbit will stare at my feet.")
+m = search("rabbit stare at feet", s)
 print s
 print m
 print
@@ -35,11 +35,11 @@ print
 # It works because "will stare" is one verb chunk.
 # The "stare" constraint matches the head word of the chunk ("stare"),
 # so "will stare" is considered an overspecified version of "stare".
-# The same happens with the "rabbit" constraint: 
-# this matches the overspecified chunk "the big white rabbit".
+# The same happens with "my feet" and the "rabbit" constraint,
+# which matches the overspecified chunk "the big white rabbit".
 
-p = Pattern.fromstring("rabbit stare at my", s)
-p.strict = True # Now it matches only what the pattern explicitly defines.
+p = Pattern.fromstring("rabbit stare at feet", s)
+p.strict = True # Now it matches only what the pattern explicitly defines (=no match).
 m = p.search(s)
 print m
 print

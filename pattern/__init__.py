@@ -1,6 +1,6 @@
-#### PATTERN ##########################################################################################
+#### PATTERN #######################################################################################
 
-# Author: Tom De Smedt <tom@organisms.be>
+# Authors: Tom De Smedt <tom@organisms.be>, Walter Daelemans <walter.daelemans@ua.ac.be>
 # License: BSD License, see LICENSE.txt
 # Copyright (c) 2010 University of Antwerp, Belgium
 # All rights reserved.
@@ -35,11 +35,20 @@
 # CLiPS Computational Linguistics Group, University of Antwerp, Belgium
 # http://www.clips.ua.ac.be/pages/pattern
 
-### CREDITS ##########################################################################################
+### CREDITS ########################################################################################
 
 __author__    = "Tom De Smedt"
-__version__   = "1.9"
+__credits__   = "Tom De Smedt, Walter Daelemans"
+__version__   = "2.6"
 __copyright__ = "Copyright (c) 2010 University of Antwerp (BE)"
 __license__   = "BSD"
 
-######################################################################################################
+####################################################################################################
+
+import os
+
+# Shortcuts to pattern.en, pattern.es, ... 
+# (instead of pattern.text.en, pattern.text.es, ...)
+try: __path__.append(os.path.join(__path__[0], "text"))
+except:
+    pass

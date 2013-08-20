@@ -3,11 +3,18 @@ import codecs
 
 from pattern.vector import Document, PORTER, LEMMA
 
-# A Document splits a given string into words and counts them.
-# Word counts can then be used to compare documents in various ways.
-# Words are filtered, cleaned and "stemmed" before counted.
-# The purpose of stemming is to bring variant forms a word together, not to find the word lemma:
-# "conspiracy" and "conspired" are both reduced to "conspir".
+# A Document is a "bag-of-words" that splits a string into words and counts them.
+# A list of words or dictionary of (word, count)-items can also be given.
+
+# Words (or more generally "features") and their word count ("feature weights")
+# can be used to compare documents. The word count in a document is normalized
+# between 0.0-1.0 so that shorted documents can be compared to longer documents.
+
+# Words can be stemmed or lemmatized before counting them.
+# The purpose of stemming is to bring variant forms a word together.
+# For example, "conspiracy" and "conspired" are both stemmed to "conspir".
+# Nowadays, lemmatization is usually preferred over stemming, 
+# e.g., "conspiracies" => "conspiracy", "conspired" => "conspire".
 
 s = """
 The shuttle Discovery, already delayed three times by technical problems and bad weather, 
@@ -20,40 +27,51 @@ when the hydrogen leak led NASA to conclude that the shuttle would not be ready 
 before its flight window closed this Monday.
 """
 
-# With threshold=1 (default), only words that occur more than once are counted.
-# Some stop words like "the", "and", "I", "is" are always ignored.
-document = Document(s, threshold=1)
+# With threshold=1, only words that occur more than once are counted.
+# With stopwords=False, words like "the", "and", "I", "is" are ignored.
+document = Document(s, threshold=1, stopwords=False)
 print document.terms
 print
 
-# The corpus/ folder contains some texts retrieved from Wikipedia.
-# Here is the code (we already executed it for you):
+# The /corpus folder contains texts mined from Wikipedia.
+# Below is the mining script (we already executed it for you):
 
+#import os, codecs
 #from pattern.web import Wikipedia
 #
-#wp = Wikipedia()
+#w = Wikipedia()
 #for q in (
 #  "badger", "bear", "dog", "dolphin", "lion", "parakeet", 
 #  "rabbit", "shark", "sparrow", "tiger", "wolf"):
-#    s = wp.search(q, cached=True)
+#    s = w.search(q, cached=True)
 #    s = s.plaintext()
-#    f = codecs.open(os.path.join("corpus", q+".txt"), "w", encoding="utf-8")
+#    print os.path.join("corpus2", q+".txt")
+#    f = codecs.open(os.path.join("corpus2", q+".txt"), "w", encoding="utf-8")
 #    f.write(s)
 #    f.close()
 
-# A document can be loaded from a text file:
+# Loading a document from a text file:
 f = os.path.join("corpus", "wolf.txt")
-document = Document.open(f, encoding="utf-8", name="wolf", stemmer=PORTER)
+s = codecs.open(f, encoding="utf-8").read()
+document = Document(s, name="wolf", stemmer=PORTER)
+print document
+print document.keywords(top=10) # (weight, feature)-items.
+print
+
+# Same document, using lemmatization instead of stemming (slower):
+document = Document(s, name="wolf", stemmer=LEMMA)
 print document
 print document.keywords(top=10)
 print
 
-# Same document, but instead of using the Porter2 stemming algorithm
-# we lemmatize words (which is much slower).
-# Observe the difference between the two sets.
-document = Document.open(f, name="wolf", stemmer=LEMMA)
-print document
-print document.keywords(top=10)
-print
+# In summary, a document is a bag-of-words representation of a text.
+# Bag-of-words means that the word order is discarded.
+# The dictionary of words (features) and their normalized word count (weights)
+# is also called the document vector:
+document = Document("a black cat and a white cat", stopwords=True)
+print document.terms
+print document.vector.features
+for feature, weight in document.vector.items():
+    print feature, weight
 
-#print document.vector
+# Document vectors can be bundled into a Model (next example).
