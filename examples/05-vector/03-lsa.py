@@ -18,7 +18,7 @@ from pattern.db import Datasheet
 
 # We'll use the Pang & Lee corpus of movie reviews, included in the testing suite.
 # Take 250 positive reviews and 250 negative reviews:
-data = os.path.join("..","..","test", "corpora", "polarity-en-pang&lee.csv")
+data = os.path.join("..","..","test", "corpora", "polarity-en-pang&lee1.csv")
 data = Datasheet.load(data)
 data = data[:250] + data[-250:]
 
@@ -33,7 +33,7 @@ m = Model(documents)
 
 print "number of documents:", len(m)
 print "number of features:", len(m.vector)
-print "number of features (average):", sum(len(d.terms) for d in m.documents) / float(len(m))
+print "number of features (average):", sum(len(d.features) for d in m.documents) / float(len(m))
 print
 
 # 6,337 different features may be too slow for some algorithms (e.g., hierarchical clustering).

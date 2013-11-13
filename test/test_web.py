@@ -564,7 +564,7 @@ class TestSearchEngine(unittest.TestCase):
     def test_results_twitter(self):
         self._test_results("Twitter",  *self.api["Twitter"])
     def test_results_flickr(self):
-        self._test_results("Flickr", *self.api["Flickr"], **{"baseline": [6,6,0,6]})
+        self._test_results("Flickr",   *self.api["Flickr"], **{"baseline": [6,6,0,6]})
     def test_results_facebook(self):
         self._test_results("Facebook", *self.api["Facebook"], **{"baseline": [0,1,0,0]})
 
@@ -729,6 +729,9 @@ class TestDOM(unittest.TestCase):
                         <span class="author">me</span>
                         Blah blah
                     </P>
+                    <P class="class1 class2">
+                        Blah blah
+                    </P>
                     <p>Read more</p>
                 </div>
             </body>
@@ -803,20 +806,42 @@ class TestDOM(unittest.TestCase):
         print "pattern.web.Node.Element.by_id()"
         print "pattern.web.Node.Element.by_attribute()"
 
+    def test_selector(self):
+        # Assert DOM CSS selectors with multiple classes.
+        v = web.DOM(self.html).body
+        p = v("p.class1")
+        self.assertEqual(len(p), 1)
+        self.assertTrue("class1" in p[0].attributes["class"])
+        p = v("p.class2")
+        self.assertEqual(len(p), 1)
+        self.assertTrue("class2" in p[0].attributes["class"])
+        p = v("p.class1.class2")
+        self.assertEqual(len(p), 1)
+        self.assertTrue("class1" in p[0].attributes["class"])
+        self.assertTrue("class2" in p[0].attributes["class"])
+        print "pattern.web.Node.Element()"
+
 #---------------------------------------------------------------------------------------------------
 
-class TestPDF(unittest.TestCase):
+class TestDocumentParser(unittest.TestCase):
     
     def setUp(self):
         pass
         
     def test_pdf(self):
         # Assert PDF to string parser.
-        v = web.PDF(open(os.path.join(PATH, "corpora", "wonderland-carroll.pdf")).read())
-        self.assertTrue("Curiouser and curiouser!" in v.string)
-        self.assertTrue(isinstance(v.string, unicode))
-        print "pattern.web.PDF.string"
-        
+        s = web.parsedoc(os.path.join(PATH, "corpora", "carroll-wonderland.pdf"))
+        self.assertTrue("Curiouser and curiouser!" in s)
+        self.assertTrue(isinstance(s, unicode))
+        print "pattern.web.parsepdf()"
+
+    def test_docx(self):
+        # Assert PDF to string parser.
+        s = web.parsedoc(os.path.join(PATH, "corpora", "carroll-lookingglass.docx"))
+        self.assertTrue("'Twas brillig, and the slithy toves" in s)
+        self.assertTrue(isinstance(s, unicode))
+        print "pattern.web.parsedocx()"
+
 #---------------------------------------------------------------------------------------------------
 
 class TestLocale(unittest.TestCase):
@@ -1020,7 +1045,7 @@ def suite():
     suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestPlaintext))
     suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestSearchEngine))
     suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestDOM))
-    suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestPDF))
+    suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestDocumentParser))
     suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestLocale))
     suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestMail))
     suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestCrawler))

@@ -84,7 +84,7 @@ class TestProfiling(unittest.TestCase):
         self.assertAlmostEqual(v, 0.210, places=3)
         print "pattern.metrics.agreement()"
 
-class TestStringFunctions(unittest.TestCase):
+class TestTextMetrics(unittest.TestCase):
     
     def setUp(self):
         pass
@@ -127,13 +127,13 @@ class TestStringFunctions(unittest.TestCase):
             
     def test_readability(self):
         # Assert that technical jargon is in the "difficult" range (< 0.30).
-        s = "The Australian platypus is seemingly a hybrid of a mammal and reptilian creature"
+        s = "The Australian platypus is seemingly a hybrid of a mammal and reptilian creature."
         v = metrics.readability(s)
         self.assertTrue(v < 0.30)        
         # Assert that Dr. Seuss is in the "easy" range (> 0.70).
-        s = "'I know some good games we could play,' said the cat." + \
-            "'I know some new tricks,' said the cat in the hat." + \
-            "'A lot of good tricks. I will show them to you.'" + \
+        s = "'I know some good games we could play,' said the cat. " + \
+            "'I know some new tricks,' said the cat in the hat. " + \
+            "'A lot of good tricks. I will show them to you.' " + \
             "'Your mother will not mind at all if I do.'"
         v = metrics.readability(s)
         self.assertTrue(v > 0.70)
@@ -181,16 +181,16 @@ class TestStringFunctions(unittest.TestCase):
     
     def test_cooccurrence(self):
         s = "The black cat sat on the mat."
-        v = metrics.cooccurrence(metrics.isplit(s), window=(-1,1), 
-                match = lambda w: w in ("cat",),
+        v = metrics.cooccurrence(s, window=(-1, 1), 
+                term1 = lambda w: w in ("cat",),
             normalize = lambda w: w.lower().strip(".:;,!?()[]'\""))
         self.assertEqual(sorted(v.keys()), ["cat"])
         self.assertEqual(sorted(v["cat"].keys()), ["black", "cat", "sat"])
         self.assertEqual(sorted(v["cat"].values()), [1, 1, 1])
         s = [("The","DT"), ("black","JJ"), ("cat","NN"), ("sat","VB"), ("on","IN"), ("the","DT"), ("mat","NN")]
-        v = metrics.co_occurrence(s, window=(-2,-1), 
-             match = lambda token: token[1].startswith("NN"),
-            filter = lambda token: token[1].startswith("JJ"))
+        v = metrics.co_occurrence(s, window=(-2, -1), 
+             term1 = lambda token: token[1].startswith("NN"),
+             term2 = lambda token: token[1].startswith("JJ"))
         self.assertEqual(v, {("cat", "NN"): {("black", "JJ"): 1}})
         print "pattern.metrics.cooccurrence()"
 
@@ -252,10 +252,10 @@ class TestStatistics(unittest.TestCase):
     
     def test_moment(self):
         # Assert 0.0 (1st central moment = 0.0).
-        v = metrics.moment([1,2,3,4,5], k=1)
+        v = metrics.moment([1,2,3,4,5], n=1)
         self.assertEqual(v, 0.0)
         # Assert 2.0 (2nd central moment = population variance).
-        v = metrics.moment([1,2,3,4,5], k=2)
+        v = metrics.moment([1,2,3,4,5], n=2)
         self.assertEqual(v, 2.0)
         print "pattern.metrics.moment()"
     
@@ -299,7 +299,12 @@ class TestStatistics(unittest.TestCase):
         self.assertTrue(abs(v[3] - 92.0) <= 0.5)
         self.assertEqual(v[4], max(a))
         print "pattern.metrics.boxplot()"
-        
+
+class TestStatisticalTests(unittest.TestCase):
+    
+    def setUp(self):
+        pass
+
     def test_fisher_test(self):
         # Assert Fisher exact test significance.
         v = metrics.fisher_exact_test(a=1, b=9, c=11, d=3)
@@ -341,6 +346,12 @@ class TestStatistics(unittest.TestCase):
                 v = metrics.chi2p(x2, df, tail=metrics.UPPER)
                 self.assertTrue(v < (0.05, 0.025, 0.01, 0.005)[i])
         print "pattern.metrics.chi2p()"
+        
+    def test_kolmogorov_smirnov(self):
+        v = metrics.ks2([1, 2, 3], [1, 2, 4])
+        self.assertAlmostEqual(v[0],  0.3333, places=4)
+        self.assertAlmostEqual(v[1],  0.9762, places=4)
+        print "pattern.metrics.ks2()"
 
 class TestSpecialFunctions(unittest.TestCase):
     
@@ -374,15 +385,25 @@ class TestSpecialFunctions(unittest.TestCase):
           ( 2.00, 0.005),
           ( 3.00, 0.000)]:
             self.assertAlmostEqual(metrics.erfc(x), y, places=3)
-        print "pattern.metrics.erfc"
+        print "pattern.metrics.erfc()"
+        
+    def test_kolmogorov(self):
+        # Assert Kolmogorov limit distribution.
+        self.assertAlmostEqual(metrics.kolmogorov(0.0), 1.0000, places=4)
+        self.assertAlmostEqual(metrics.kolmogorov(0.5), 0.9639, places=4)
+        self.assertAlmostEqual(metrics.kolmogorov(1.0), 0.2700, places=4)
+        self.assertAlmostEqual(metrics.kolmogorov(2.0), 0.0007, places=4)
+        self.assertAlmostEqual(metrics.kolmogorov(4.0), 0.0000, places=4)
+        print "pattern.metrics.kolmogorov()"
 
 #---------------------------------------------------------------------------------------------------
 
 def suite():
     suite = unittest.TestSuite()
     suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestProfiling))
-    suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestStringFunctions))
+    suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestTextMetrics))
     suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestStatistics))
+    suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestStatisticalTests))
     suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestSpecialFunctions))
     return suite
 

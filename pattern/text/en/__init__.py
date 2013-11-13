@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(MODULE, "..", "..", "..", ".."))
 
 # Import parser base classes.
 from pattern.text import (
-    Lexicon, Spelling, Parser as _Parser, ngrams, pprint, commandline,
+    Lexicon, Model, Morphology, Context, Parser as _Parser, ngrams, pprint, commandline,
     PUNCTUATION
 )
 # Import parser universal tagset.
@@ -37,6 +37,10 @@ from pattern.text.tree import (
 # Import sentiment analysis base classes.
 from pattern.text import (
     Sentiment as _Sentiment, NOUN, VERB, ADJECTIVE, ADVERB
+)
+# Import spelling base class.
+from pattern.text import (
+    Spelling
 )
 # Import verb tenses.
 from pattern.text import (
@@ -87,9 +91,9 @@ def find_lemmata(tokens):
             lemma = conjugate(word, INFINITIVE) or word
         token.append(lemma.lower())
     return tokens
-    
+
 class Parser(_Parser):
-    
+
     def find_lemmata(self, tokens, **kwargs):
         return find_lemmata(tokens)
 
@@ -101,7 +105,7 @@ class Parser(_Parser):
         return _Parser.find_tags(self, tokens, **kwargs)
 
 class Sentiment(_Sentiment):
-    
+
     def load(self, path=None):
         _Sentiment.load(self, path)
         # Map "terrible" to adverb "terribly" (+1% accuracy)
@@ -115,22 +119,20 @@ class Sentiment(_Sentiment):
                     p, s, i = pos["JJ"]
                     self.annotate(w + "ly", "RB", p, s, i)
 
-lexicon = Lexicon(
-        path = os.path.join(MODULE, "en-lexicon.txt"), 
-  morphology = os.path.join(MODULE, "en-morphology.txt"), 
-     context = os.path.join(MODULE, "en-context.txt"), 
-    entities = os.path.join(MODULE, "en-entities.txt"),
-    language = "en"
-)
-
 parser = Parser(
-     lexicon = lexicon,
+     lexicon = os.path.join(MODULE, "en-lexicon.txt"),    # A dict of known words -> most frequent tag.
+       model = os.path.join(MODULE, "en-model.slp"),      # A SLP classifier trained on WSJ (01-07).
+  morphology = os.path.join(MODULE, "en-morphology.txt"), # A set of suffix rules (e.g., -ly = adverb).
+     context = os.path.join(MODULE, "en-context.txt"),    # A set of contextual rules.
+    entities = os.path.join(MODULE, "en-entities.txt"),   # A dict of named entities: Bill = NNP-PERS.
      default = ("NN", "NNP", "CD"),
     language = "en"
 )
 
+lexicon = parser.lexicon # Expose lexicon.
+
 sentiment = Sentiment(
-        path = os.path.join(MODULE, "en-sentiment.xml"), 
+        path = os.path.join(MODULE, "en-sentiment.xml"),
       synset = "wordnet_id",
    negations = ("no", "not", "n't", "never"),
    modifiers = ("RB",),
@@ -162,7 +164,7 @@ def split(s, token=[WORD, POS, CHUNK, PNP]):
     """ Returns a parsed Text from the given parsed string.
     """
     return Text(s, token)
-    
+
 def tag(s, tokenize=True, encoding="utf-8"):
     """ Returns a list of (token, tag)-tuples from the given string.
     """
@@ -176,7 +178,7 @@ def suggest(w):
     """ Returns a list of (word, confidence)-tuples of spelling corrections.
     """
     return spelling.suggest(w)
-  
+
 def polarity(s, **kwargs):
     """ Returns the sentence polarity (positive/negative) between -1.0 and 1.0.
     """
@@ -186,7 +188,7 @@ def subjectivity(s, **kwargs):
     """ Returns the sentence subjectivity (objective/subjective) between 0.0 and 1.0.
     """
     return sentiment(s, **kwargs)[1]
-    
+
 def positive(s, threshold=0.1, **kwargs):
     """ Returns True if the given sentence has a positive sentiment (polarity >= threshold).
     """

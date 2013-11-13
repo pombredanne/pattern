@@ -20,6 +20,8 @@
 # Unsupervised machine learning or clustering can be used to group unlabeled documents
 # into subsets based on their similarity.
 
+import stemmer; _stemmer=stemmer
+
 import sys
 import os
 import re
@@ -27,11 +29,12 @@ import glob
 import heapq
 import codecs
 import cPickle
-import stemmer; _stemmer=stemmer
+import gzip
+import types
 
 from math        import log, exp, sqrt
 from time        import time
-from random      import random, choice
+from random      import random, randint, choice, sample
 from itertools   import izip, chain
 from bisect      import insort
 from operator    import itemgetter
@@ -195,6 +198,8 @@ for f in glob.glob(os.path.join(MODULE, "stopwords-*.txt")):
     stopwords[language] = dict.fromkeys(w, True)
 
 # The following English words could also be meaningful nouns:
+
+#from pattern.vector import stopwords
 #for w in ["mine", "us", "will", "can", "may", "might"]:
 #    stopwords["en"].pop(w)
 
@@ -222,6 +227,8 @@ def stem(word, stemmer=PORTER, **kwargs):
         With stemmer=LEMMA, either uses Word.lemma or inflect.singularize().
         (with optional parameter language="en", pattern.en.inflect is used).
     """
+    if hasattr(word, "string") and stemmer in (PORTER, None):
+        word = word.string
     if isinstance(word, basestring):
         word = decode_utf8(word.lower())
     if stemmer is None:
@@ -229,7 +236,7 @@ def stem(word, stemmer=PORTER, **kwargs):
     if stemmer == PORTER:
         return _stemmer.stem(word, **kwargs)
     if stemmer == LEMMA:
-        if word.__class__.__name__ == "Word":
+        if hasattr(word, "lemma"): # pattern.en.Word
             w = word.string.lower()
             if word.lemma is not None:
                 return word.lemma
@@ -240,8 +247,9 @@ def stem(word, stemmer=PORTER, **kwargs):
             if word.pos.startswith(("JJ",)):
                 return predicative(w)
             if word.pos.startswith(("DT", "PR", "WP")):
-                return singularize(w, pos=pos)
-        return singularize(word, pos=kwargs.get("pos", "noun"))
+                return singularize(w, pos=word.pos)
+            return w
+        return singularize(word, pos=kwargs.get("pos", "NN"))
     if hasattr(stemmer, "__call__"):
         return decode_utf8(stemmer(word))
     return word.lower()
@@ -256,14 +264,17 @@ def count(words=[], top=None, threshold=0, stemmer=None, exclude=[], stopwords=F
     # e.g., count(words, dict=readonlydict) as used in Document.
     count = kwargs.get("dict", dict)()
     for w in words:
-        if w.__class__.__name__ == "Word":
-            w = w.string.lower()
+        w1 = w
+        w2 = w
+        if hasattr(w, "string"): # pattern.en.Word
+            w1 = w.string.lower()
         if isinstance(w, basestring):
-            w = w.lower()
-        if (stopwords or not w in _stopwords.get(language or "en", ())) and not w in exclude:
+            w1 = w.lower()
+            w2 = w.lower()
+        if (stopwords or not w1 in _stopwords.get(language or "en", ())) and not w1 in exclude:
             if stemmer is not None:
-                w = stem(w, stemmer, **kwargs)
-            dict.__setitem__(count, w, (w in count) and count[w]+1 or 1)
+                w2 = stem(w2, stemmer, **kwargs).lower()
+            dict.__setitem__(count, w2, (w2 in count) and count[w2]+1 or 1)
     for k in count.keys():
         if count[k] <= threshold:
             dict.__delitem__(count, k)
@@ -292,9 +303,6 @@ def character_ngrams(string="", n=3, top=None, threshold=0, exclude=[], **kwargs
     
 chngrams = character_ngrams
 
-def trigrams(*args, **kwargs):
-    kwargs["n"]=3; return character_ngrams(*args, **kwargs)
-
 #--- DOCUMENT --------------------------------------------------------------------------------------
 # A Document is a bag of words in which each word is a feature.
 # A Document is represented as a vector of weighted (TF-IDF) features.
@@ -321,15 +329,16 @@ class Document(object):
     #         stemmer = None, 
     #         exclude = [], 
     #       stopwords = False, 
-    #        language = None,
     #            name = None, 
-    #            type = None
+    #            type = None,
+    #        language = None,
+    #     description = None
     # )
     def __init__(self, string="", **kwargs):
         """ An unordered bag-of-words representation of the given string, list, dict or Sentence.
             Lists can contain tuples (of), strings or numbers.
             Dicts can contain tuples (of), strings or numbers as keys, and floats as values.
-            Document.terms stores a dict of (word, count)-items.
+            Document.words stores a dict of (word, count)-items.
             Document.vector stores a dict of (word, weight)-items, 
             where weight is the term frequency normalized (0.0-1.0) to remove document length bias.
             Punctuation marks are stripped from the words.
@@ -373,6 +382,14 @@ class Document(object):
             w = []; [w.extend(sentence.words) for sentence in string]
             w = [w for w in w if kwargs["filter"](w.string)]
             w = count(w, **kwargs)
+            v = None
+        # Another Document: copy words, wordcount, name and type.
+        elif isinstance(string, Document):
+            for k in ("name", "type", "label", "language", "description"):
+                if hasattr(string, k):
+                    kwargs.setdefault(k, getattr(string, k))
+            w = string.terms
+            w = kwargs["dict"](w)
             v = None
         else:
             raise TypeError, "document string is not str, unicode, list, dict, Vector, Sentence or Text."
@@ -507,6 +524,10 @@ class Document(object):
         # Cache the word count so we can reuse it when calculating tf.
         if not self._count: self._count = sum(self.terms.values())
         return self._count
+        
+    @property
+    def wordcount(self):
+        return self._count
 
     def __len__(self):
         return len(self.terms)
@@ -569,13 +590,19 @@ class Document(object):
             if w == BINARY:
                 f = lambda w: int(self._terms[w] > 0)
             if w == TF:
-                f = self.tf_idf
+                f = self.tf
             if w == TFIDF:
                 f = self.tf_idf
             if w == IG:
                 f = self.model.ig
             self._vector = Vector(((w, f(w)) for w in self.terms), weight=w)
         return self._vector
+        
+    @property
+    def concepts(self):
+        """ Yields the document concept vector if the document is part of an LSA model.
+        """
+        return self.model and self.model.lsa and self.model.lsa.concepts.get(self.id) or None
 
     def keywords(self, top=10, normalized=True):
         """ Returns a sorted list of (relevance, word)-tuples that are top keywords in the document.
@@ -614,7 +641,7 @@ class Document(object):
                  self.name and ", name=%s" % repr(self.name) or "",
                  self.type and ", type=%s" % repr(self.type) or "")
 
-Bag = BagOfWords = Document
+Bag = BagOfWords = BOW = Document
 
 #--- VECTOR ----------------------------------------------------------------------------------------
 # A Vector represents document terms (called features) and their tf or tf * idf relevance weight.
@@ -628,19 +655,40 @@ Bag = BagOfWords = Document
 
 class Vector(readonlydict):
     
-    id = 1
-    
+    id = 0
+
     def __init__(self, *args, **kwargs):
         """ A dictionary of (feature, weight)-items of the features (terms, words) in a Document.
             A vector can be used to compare the document to another document with a distance metric.
             For example, vectors with 2 features (x, y) can be compared using 2D Euclidean distance.
             Vectors that represent text documents can be compared using cosine similarity.
         """
-        self.id     = Vector.id; Vector.id+=1  # Unique ID.
-        self.weight = kwargs.pop("weight", TF) # Vector weights based on tf, tf-idf, binary?
-        self._norm  = None
-        readonlydict.__init__(self, *args, **kwargs)
-    
+        s = kwargs.pop("sparse", True)
+        f = ()
+        w = None
+        if len(args) > 0:
+            # From a Vector (copy weighting scheme).
+            if isinstance(args[0], Vector):
+                w = args[0].weight
+            # From a dict.
+            if isinstance(args[0], dict):
+                f = args[0].iteritems()
+            # From an iterator.
+            elif hasattr(args[0], "__iter__"):
+                f = iter(args[0])
+        Vector.id  += 1
+        self.id     = Vector.id               # Unique ID.
+        self.weight = kwargs.pop("weight", w) # TF, TFIDF, IG, BINARY or None.
+        self._norm  = None                    # Cached L2-norm.
+        # Exclude zero weights (sparse=True).
+        f = chain(f, kwargs.iteritems())
+        f = ((k, v) for k, v in f if not s or v != 0)
+        readonlydict.__init__(self, f)
+
+    @classmethod
+    def fromkeys(cls, k, default=None, **kwargs):
+        return Vector(((k, default) for k in k), **kwargs)
+
     @property
     def features(self):
         return self.keys()
@@ -658,7 +706,7 @@ class Vector(readonlydict):
     norm = l2 = L2 = L2norm = l2norm = L2_norm = l2_norm
     
     def copy(self):
-        return Vector(self, weight=self.weight)
+        return Vector(self, weight=self.weight, sparse=False)
 
     def __call__(self, vector={}):
         """ Vector(vector) returns a new vector updated with values from the given vector.
@@ -688,6 +736,14 @@ def features(vectors=[]):
 
 _features = features
 
+def sparse(v):
+    """ Returns the vector with features that have weight 0 removed.
+    """
+    for f, w in list(v.iteritems()):
+        if w == 0:
+            del v[f]
+    return v
+
 def relative(v):
     """ Returns the vector with feature weights normalized so that their sum is 1.0 (in-place).
     """
@@ -697,7 +753,7 @@ def relative(v):
         s(v, f, v[f] / n)
     return v
     
-rel = relative
+normalize = rel = relative
 
 def l2_norm(v):
     """ Returns the L2-norm of the given vector.
@@ -734,8 +790,8 @@ def tf_idf(vectors=[], base=2.71828): # Euler's number
 
 tfidf = tf_idf
 
-COSINE, EUCLIDEAN, MANHATTAN, HAMMING = \
-    "cosine", "euclidean", "manhattan", "hamming"
+COSINE, EUCLIDEAN, MANHATTAN, CHEBYSHEV, HAMMING = \
+    "cosine", "euclidean", "manhattan", "chebyshev", "hamming"
     
 def distance(v1, v2, method=COSINE):
     """ Returns the distance between two vectors.
@@ -746,6 +802,8 @@ def distance(v1, v2, method=COSINE):
         return sum((v1.get(w, 0) - v2.get(w, 0)) ** 2 for w in set(chain(v1, v2)))
     if method == MANHATTAN:
         return sum(abs(v1.get(w, 0) - v2.get(w, 0)) for w in set(chain(v1, v2)))
+    if method == CHEBYSHEV:
+        return max(abs(v1.get(w, 0) - v2.get(w, 0)) for w in set(chain(v1, v2)))
     if method == HAMMING:
         d = sum(not (w in v1 and w in v2 and v1[w] == v2[w]) for w in set(chain(v1, v2))) 
         d = d / float(max(len(v1), len(v2)) or 1)
@@ -781,7 +839,7 @@ NORM, L1, L2, TOP300 = "norm", "L1", "L2", "top300"
 IG = INFOGAIN = "infogain"
 
 # Clustering methods:
-KMEANS, HIERARCHICAL, ALL = "k-means", "hierarchical", "all"
+KMEANS, HIERARCHICAL = "k-means", "hierarchical"
 
 class Model(object):
     
@@ -799,6 +857,7 @@ class Model(object):
         self._cos        = {}             # Cache of ((d1.id, d2.id), relevance)-items (cosine similarity).
         self._ig         = {}             # Cache of (word, information gain)-items.
         self._vector     = None           # Cache of model vector with all the features in the model.
+        self._classifier = None           # Classifier trained on the documents in the model (NB, KNN, SVM).
         self._lsa        = None           # LSA matrix with reduced dimensionality.
         self._weight     = weight         # Weight used in Document.vector (TF, TFIDF, IG, BINARY or None).
         self._update()
@@ -807,6 +866,8 @@ class Model(object):
     @property
     def documents(self):
         return self._documents
+        
+    docs = documents
 
     @property
     def terms(self):
@@ -820,30 +881,34 @@ class Model(object):
         
     labels = classes
 
+    @property
+    def classifier(self):
+        return self._classifier
+
     def _get_lsa(self):
         return self._lsa
     def _set_lsa(self, v=None):
+        self._update() # Clear the cache.
         self._lsa = v
-        self._update()
         
     lsa = property(_get_lsa, _set_lsa)
 
     def _get_weight(self):
         return self._weight
     def _set_weight(self, w):
-        self._weight = w
         self._update() # Clear the cache.
+        self._weight = w
         
     weight = property(_get_weight, _set_weight)
 
     @classmethod
     def load(cls, path):
-        """ Loads the model from a pickle file created with Model.save().
+        """ Loads the model from a gzipped pickle file created with Model.save().
         """
-        return cPickle.load(open(path))
+        return cPickle.loads(gzip.GzipFile(path, "rb").read())
         
     def save(self, path, update=False):
-        """ Saves the model as a pickle file at the given path.
+        """ Saves the model as a gzipped pickle file at the given path.
             The advantage is that cached vectors and cosine similarity are stored.
         """
         if update:
@@ -851,13 +916,17 @@ class Model(object):
             for d1 in self.documents:
                 for d2 in self.documents:
                     self.cosine_similarity(d1, d2)
+            for w in self.vector:
+                self.information_gain(w)
         m = dict.fromkeys((d.id for d in self.documents), True)
         for id1, id2 in self._cos.keys():
             # Remove Model.search() query cache.
             if id1 not in m \
             or id2 not in m:
                 self._cos.pop((id1, id2))
-        cPickle.dump(self, open(path, "wb"), 1) # 1 = binary
+        f = gzip.GzipFile(path, "wb")
+        f.write(cPickle.dumps(self, 1)) # 1 = binary
+        f.close()
         
     def export(self, path, format=ORANGE, **kwargs):
         """ Exports the model as a file for other machine learning applications,
@@ -867,7 +936,7 @@ class Model(object):
         keys = sorted(self.vector.keys())
         s = []
         # Orange tab format:
-        if format == ORANGE:
+        if format.lower() == ORANGE:
             s.append("\t".join(keys + ["m#name", "c#type"]))
             for document in self.documents:
                 v = document.vector
@@ -876,7 +945,7 @@ class Model(object):
                 v = "%s\t%s\t%s" % (v, document.name or "", document.type or "")
                 s.append(v)
         # Weka ARFF format:
-        if format == WEKA:
+        if format.lower() == WEKA:
             s.append("@RELATION %s" % kwargs.get("name", hash(self)))
             s.append("\n".join("@ATTRIBUTE %s NUMERIC" % k for k in keys))
             s.append("@ATTRIBUTE class {%s}" % ",".join(set(d.type or "" for d in self.documents)))
@@ -888,7 +957,7 @@ class Model(object):
                 v = "%s,%s" % (v, document.type or "")
                 s.append(v)
         s = "\n".join(s)
-        f = open(path, "w", encoding="utf-8")
+        f = open(path, "wb", encoding="utf-8")
         f.write(decode_utf8(s))
         f.close()
     
@@ -899,6 +968,7 @@ class Model(object):
         self._cos = {}
         self._ig  = {}
         self._vector = None
+        self._classifier = None
         self._lsa = None
         for document in self.documents:
             document._vector = None
@@ -924,26 +994,27 @@ class Model(object):
             (feature weights will be different now that there is a new document).
         """
         if not isinstance(document, Document):
-            raise TypeError, "Model.append() expects a Document."
-        document._model = self
+            document = Document(document)
         if document.name is not None:
             self._index[document.name] = document
-        if self._weight != TF:
-            self._update()
+        document._model = self
         list.append(self.documents, document)
+        if self._weight not in (TF, BINARY, None):
+            self._update()
         
     def extend(self, documents):
         """ Extends the model with the given list of documents.
         """
-        for document in documents:
+        documents = list(documents)
+        for i, document in enumerate(documents):
             if not isinstance(document, Document):
-                raise TypeError, "Model.extend() expects a list of Documents."
-            document._model = self
+                documents[i] = Document(document)
             if document.name is not None:
                 self._index[document.name] = document
-        if self._weight != TF:
-            self._update()
+            document._model = self
         list.extend(self.documents, documents)
+        if self._weight not in (TF, BINARY, None):
+            self._update()
         
     def remove(self, document):
         """ Removes the given Document from the model, and sets Document.model=None.
@@ -955,6 +1026,8 @@ class Model(object):
         """
         if name in self._index:
             return self._index[name]
+            
+    doc = document
         
     def document_frequency(self, word):
         """ Returns the document frequency for the given word or feature.
@@ -1007,8 +1080,8 @@ class Model(object):
         #    Words in a document that are not in the model are ignored,
         #    i.e., the document was not in the model, this can be the case in Model.search().
         # See: Vector.__call__().
-        if not self._vector: 
-            self._vector = Vector((w, 0.0) for w in chain(*(d.terms for d in self.documents)))
+        if not self._vector:
+            self._vector = Vector(((w, 0.0) for w in chain(*(d.terms for d in self.documents))), sparse=False)
         return self._vector
 
     @property
@@ -1055,12 +1128,12 @@ class Model(object):
             # Using LSA concept space:
             v1 = id1 in self.lsa and self.lsa[id1] or self._lsa.transform(document1)
             v2 = id2 in self.lsa and self.lsa[id2] or self._lsa.transform(document2)
-            s = sum(a * b for a, b in izip(v1.itervalues(), v2.itervalues())) / (v1.norm * v2.norm or 1)
+            s = cosine_similarity(v1, v2)
         # Cache the similarity weight for reuse.
         self._cos[(id1, id2)] = s
         return s
         
-    similarity = cosine_similarity
+    similarity = cos = cosine_similarity
     
     def nearest_neighbors(self, document, top=10):
         """ Returns a list of (similarity, document)-tuples in the model, 
@@ -1080,18 +1153,16 @@ class Model(object):
             The given words can be a string (one word), a list or tuple of words, or a Document.
         """
         top = kwargs.pop("top", 10)
-        if not isinstance(words, (list, tuple, Document)):
-            words = [words]
         if not isinstance(words, Document):
-            kwargs.setdefault("threshold", 0) # Same stemmer as other documents should be given.
-            words = Document(" ".join(words), **kwargs)
-        words._model = self # So we can calculate tf-idf.
-        # Documents that are not in the model,
-        # consisting only of words that are not in the model,
-        # have no related documents in the model:
-        if len([True for w in words if w in self.vector]) == 0:
+            kwargs.setdefault("filter", lambda w: w) # pass-through.
+            kwargs.setdefault("stopwords", True)
+            words = Document(words)
+        if len([w for w in words if w in self.vector]) == 0:
             return []
-        return self.nearest_neighbors(words, top)
+        m, words._model = words._model, self # So we can calculate tf-idf.
+        n, words._model = self.nearest_neighbors(words, top), m
+        words._model = m
+        return n
         
     search = vector_space_search
     
@@ -1100,16 +1171,17 @@ class Model(object):
         """
         return distance(document1.vector, document2.vector, *args, **kwargs)
     
-#   def cluster(self, documents=ALL, method=KMEANS, k=10, iterations=10)
-#   def cluster(self, documents=ALL, method=HIERARCHICAL, k=1, iterations=1000)
-    def cluster(self, documents=ALL, method=KMEANS, **kwargs):
+#   def cluster(self, method=KMEANS, k=10, iterations=10)
+#   def cluster(self, method=HIERARCHICAL, k=1, iterations=1000)
+    def cluster(self, method=KMEANS, **kwargs):
         """ Clustering is an unsupervised machine learning method for grouping similar documents.
             - k-means clustering returns a list of k clusters (each is a list of documents).
             - hierarchical clustering returns a list of documents and Cluster objects,
               where a Cluster is a list of documents and other clusters (see Cluster.flatten()).
         """
-        if documents == ALL:
-            documents = self.documents
+        # The optional documents parameter can be a selective list 
+        # of documents in the model to cluster.
+        documents = kwargs.get("documents", self.documents)
         if not getattr(self, "lsa", None):
             # Using document vectors:
             vectors, features = [d.vector for d in documents], self.vector.keys()
@@ -1146,6 +1218,7 @@ class Model(object):
         """
         self._lsa = LSA(self, k=dimensions)
         self._cos = {}
+        return self._lsa
         
     reduce = latent_semantic_analysis
     
@@ -1218,6 +1291,27 @@ class Model(object):
                    language = d.language,
                 description = d.description) for d in self.documents])
         return model
+    
+    # XXX Model.save() conflicts with Model.classifier.
+    
+    def train(self, *args, **kwargs):
+        """ Trains Model.classifier with the document vectors.
+            Each document is expected to have a Document.type.
+            Model.predict() can then be used to predict the type of other (unknown) documents.
+        """
+        if len(args) == 0:
+            Classifier = kwargs.pop("Classifier", "")
+        if len(args) >= 1:
+            Classifier = args[0]; args=args[1:]
+        kwargs["train"] = self
+        self._classifier = Classifier(*args, **kwargs)
+        self._classifier.finalize()
+
+    def predict(self, *args, **kwargs):
+        """ Returns the type for a given document,
+            based on the similarity of documents in the trained Model.classifier.
+        """
+        return self._classifier.classify(*args, **kwargs)            
 
 # Backwards compatibility.
 Corpus = Model
@@ -1359,6 +1453,11 @@ class LSA(object):
                     print document, concept
         """
         return self.u
+        
+    def vector(self, id):
+        if isinstance(id, Document):
+            id = id.id
+        return self.u[id]
 
     def __getitem__(self, id):
         return self.u[id]
@@ -1384,7 +1483,7 @@ class LSA(object):
         v = numpy.dot(numpy.dot(numpy.linalg.inv(numpy.diag(self.sigma)), self.vt), v)
         v = _lsa_transform_cache[document.id] = Vector(enumerate(v))
         return v
-        
+
 # LSA cache for Model.vector_space_search() shouldn't be stored with Model.save()
 # (so it is a global instead of a property of the LSA class).
 _lsa_transform_cache = {}
@@ -1614,7 +1713,7 @@ class Cluster(list):
                 item.traverse(visit)
 
     def __repr__(self):
-        return "Cluster(%s)" % list.__repr__(self)[1:-1]
+        return "Cluster(%s)" % list.__repr__(self)
 
 def sequence(i=0, f=lambda i: i+1):
     """ Yields an infinite sequence, for example:
@@ -1664,9 +1763,12 @@ def hierarchical(vectors, k=1, iterations=1000, distance=COSINE, **kwargs):
         centroids.append((id.next(), v))
     return clusters
 
+#from pattern.vector import Vector
+#
 #v1 = Vector(wings=0, beak=0, claws=1, paws=1, fur=1) # cat
 #v2 = Vector(wings=0, beak=0, claws=0, paws=1, fur=1) # dog
 #v3 = Vector(wings=1, beak=1, claws=1, paws=0, fur=0) # bird
+#
 #print hierarchical([v1, v2, v3])
 
 #### CLASSIFIER ####################################################################################
@@ -1689,9 +1791,11 @@ class Classifier(object):
             where document can be a Document, Vector, dict or string
             (dicts and strings are implicitly converted to vectors).
         """
-        self._vectors  = []       # List of trained (type, vector)-tuples.
-        self._classes  = {}       # Dict of (class, frequency)-items.
-        self._baseline = baseline # Default predicted class.
+        self.description = ""       # Description of the dataset: author e-mail, etc.
+        self._data       = {}       # Custom data for (pickleable) subclasses.
+        self._vectors    = []       # List of trained (type, vector)-tuples.
+        self._classes    = {}       # Dict of (class, frequency)-items.
+        self._baseline   = baseline # Default predicted class.
         # Train on the list of Document objects or (document, type)-tuples:
         for d in (isinstance(d, Document) and (d, d.type) or d for d in train):
             self.train(*d)
@@ -1863,18 +1967,34 @@ class Classifier(object):
         # Trapzoidal rule: area = (a + b) * h / 2, where a=y0, b=y1 and h=x1-x0.
         return sum(0.5 * (x1 - x0) * (y1 + y0) for (x0, y0), (x1, y1) in sorted(izip(roc, roc[1:])))
 
-    def save(self, path):
+    def save(self, path, final=False):
+        """ Saves the classifier as a gzipped pickle file.
+        """
+        if final:
+            self.finalize()
         self.test = None # Can't pickle instancemethods.
-        cPickle.dump(self, open(path, "wb"), 1) # 1 = binary
+        f = gzip.GzipFile(path, "wb")
+        f.write(cPickle.dumps(self, 1)) # 1 = binary
+        f.close()
 
     @classmethod
     def load(cls, path):
-        self = cPickle.load(open(path))
+        """ Loads the classifier from a gzipped pickle file.
+        """
+        f = gzip.GzipFile(path, "rb")
+        self = cPickle.loads(f.read())
         self._on_load(path) # Initialize subclass (e.g., SVM).
         self.test = self._test
+        f.close()
         return self
 
     def _on_load(self, path):
+        pass
+        
+    def finalize(self):
+        """ Removes training data from memory, keeping only the trained model,
+            reducing file size with Classifier.save().
+        """
         pass
 
 #--- CLASSIFIER EVALUATION -------------------------------------------------------------------------
@@ -1942,9 +2062,9 @@ def K_fold_cross_validation(Classifier, documents=[], folds=10, **kwargs):
     d = shuffled(d) # Avoid a list sorted by type (because we take successive folds).
     m = [0.0, 0.0, 0.0, 0.0] # Macro-average accuracy, precision, recall & F1-score.
     for i in range(K):
-        n = len(d) / float(K)     # Test fold size.
-        x = int(round(i * n))     # Test fold start index.
-        y = int(round(i * n + n)) # Test fold stop index.
+        n = len(d) / float(max(K, 2)) # Test fold size.
+        x = int(round(i * n))         # Test fold start index.
+        y = int(round(i * n + n))     # Test fold stop index.
         classifier = Classifier(train=d[:x]+d[y:], **kwargs)
         A, P, R, F = classifier.test(d[x:y], **kwargs)
         m[0] += A
@@ -1989,7 +2109,7 @@ MULTINOMIAL = "multinomial" # Feature weighting.
 BINOMIAL    = "binomial"    # Feature occurs in class (1) or not (0).
 BERNOUILLI  = "bernouilli"  # Feature occurs in class (1) or not (0).
 
-class NaiveBayes(Classifier):
+class NB(Classifier):
     
     def __init__(self, train=[], baseline=MAJORITY, method=MULTINOMIAL, alpha=0.0001):
         """ Naive Bayes is a simple supervised learning method for text classification.
@@ -1999,6 +2119,7 @@ class NaiveBayes(Classifier):
         self._classes    = {}     # {class: frequency}
         self._features   = {}     # {feature: frequency}
         self._likelihood = {}     # {class: {feature: frequency}}
+        self._cache      = {}     # Cache log likelihood sums.
         self._method     = method # MULTINOMIAL or BERNOUILLI.
         self._alpha      = alpha  # Smoothing.
         Classifier.__init__(self, train, baseline)
@@ -2022,6 +2143,7 @@ class NaiveBayes(Classifier):
         type, vector = self._vector(document, type=type)
         self._classes[type] = self._classes.get(type, 0) + 1
         self._likelihood.setdefault(type, {})
+        self._cache.pop(type, None)
         for f, w in vector.iteritems():
             if self._method in (BINOMIAL, BERNOUILLI):
                 w = 1
@@ -2038,17 +2160,21 @@ class NaiveBayes(Classifier):
         # The multiplication can cause underflow so we use log() instead.
         # For unknown features, we smoothen with an alpha value.
         v = self._vector(document)[1]
-        n = float(sum(self._classes.itervalues()))
+        m = self._method
+        a = self._alpha
+        n = self._classes.itervalues()
+        n = float(sum(n))
         p = defaultdict(float)
         for type in self._classes:
-            if self._method == MULTINOMIAL:
-                d = float(sum(self._likelihood[type].itervalues()))
-            if self._method in (BINOMIAL, BERNOUILLI):
+            if m == MULTINOMIAL:
+                if not type in self._cache: # 10x faster
+                    self._cache[type] = float(sum(self._likelihood[type].itervalues()))
+                d = self._cache[type]
+            if m == BINOMIAL \
+            or m == BERNOUILLI:
                 d = float(self._classes[type])
-            g = 0
-            for f in v:
-                # Conditional probabilities:
-                g += log(self._likelihood[type].get(f, self._alpha) / d)
+            L = self._likelihood[type]
+            g = sum(log((L[f] if f in L else a) / d) for f in v)
             g = exp(g) * self._classes[type] / n # prior
             p[type] = g
         # Normalize probability estimates.
@@ -2067,7 +2193,7 @@ class NaiveBayes(Classifier):
         except:
             return self.baseline
 
-Bayes = NB = NaiveBayes
+Bayes = NaiveBayes = NB
 
 #--- K-NEAREST NEIGHBOR CLASSIFIER -----------------------------------------------------------------
 
@@ -2095,7 +2221,7 @@ class KNN(Classifier):
             you need to supply LSA.transform(document).
         """
         # Distance is calculated between the document vector and all training instances.
-        # This will make KNN.test() slow in higher dimensions.
+        # This will make KNN slow in higher dimensions.
         classes = {}
         v1 = self._vector(document)[1]
         D = ((distance(v1, v2, method=self.distance), type) for type, v2 in self._vectors)
@@ -2120,16 +2246,113 @@ class KNN(Classifier):
 
 NearestNeighbor = kNN = KNN
 
-#d1 = Document("cats have stripes, purr and drink milk", type="cat", threshold=0, stemmer=None)
-#d2 = Document("cows are black and white, they moo and give milk", type="cow", threshold=0, stemmer=None)
-#d3 = Document("birds have wings and can fly", type="bird", threshold=0, stemmer=None)
-#knn = kNN()
+#from pattern.vector import Document, KNN 
+#
+#d1 = Document("cats have stripes, purr and drink milk", type="cat")
+#d2 = Document("cows are black and white, they moo and give milk", type="cow")
+#d3 = Document("birds have wings and can fly", type="bird")
+#
+#knn = KNN()
 #for d in (d1, d2, d3):
 #    knn.train(d)
+#
 #print knn.binary
 #print knn.classes
-#print knn.classify(Document("something that can fly", threshold=0, stemmer=None))
+#print knn.classify(Document("something that can fly"))
 #print KNN.test((d1, d2, d3), folds=2)
+
+#--- SINGLE-LAYER PERCEPTRON ------------------------------------------------------------------------
+
+class SLP(Classifier):
+    
+    def __init__(self, train=[], baseline=MAJORITY, iterations=1):
+        """ Perceptron (SLP, single-layer averaged perceptron) is a simple artificial neural network,
+            a supervised learning method sometimes used for i.a. part-of-speech tagging.
+            Documents are classified based on the neuron that outputs the highest weight
+            for the given inputs (i.e., document vector features).
+            A feature is taken to occur in a vector (1) or not (0), i.e. BINARY weight.
+        """
+        self._weight    = defaultdict(dict) # {class: {feature: (weight, weight sum, timestamp)}}
+        self._iteration = 0
+        train = chain(*(shuffled(train) for i in range(iterations)))
+        Classifier.__init__(self, train, baseline)
+
+    @property
+    def features(self):
+        return list(set(chain(*(f.iterkeys() for f in self._weight.itervalues()))))
+        
+    def train(self, document, type=None):
+        """ Trains the classifier with the given document of the given type (i.e., class).
+            A document can be a Document, Vector, dict, list or string.
+            If no type is given, Document.type will be used instead.
+        """
+        def _accumulate(type, feature, weight, i):
+            # Collins M. (2002). Discriminative Training Methods for Hidden Markov Models. EMNLP 2002.
+            # Based on: http://honnibal.wordpress.com/2013/09/11/
+            # Accumulate average weights (prevents overfitting).
+            # Instead of keeping all intermediate results and averaging them at the end,
+            # we keep a running sum and the iteration in which the sum was last modified.
+            w = self._weight[type]
+            w0, w1, j = w[feature] if feature in w else (0, 0, 0)
+            w0 += weight
+            w[feature] = (w0, (i-j) * w0 + w1, i)
+        type, vector = self._vector(document, type=type)
+        self._classes[type] = self._classes.get(type, 0) + 1
+        t1 = type
+        t2 = SLP.classify(self, document)
+        if t1 != t2: # Error correction.
+            self._iteration += 1
+            for f in vector:
+                _accumulate(t1, f, +1, self._iteration)
+                _accumulate(t2, f, -1, self._iteration)
+
+    def classify(self, document, discrete=True):
+        """ Returns the type with the highest probability for the given document.
+            If the classifier has been trained on LSA concept vectors
+            you need to supply LSA.transform(document).
+        """
+        v = self._vector(document)[1]
+        i = self._iteration or 1
+        i = float(i)
+        p = defaultdict(float)
+        for type, w in self._weight.iteritems():
+            #p[type] = sum(w[f][0] for f in v if f in w) # Without averaging.
+            s = 0
+            for f in v:
+                if f in w:
+                    w0, w1, j = w[f]
+                    s += ((i-j) * w0 + w1) / i
+            p[type] = s
+        # Normalize probability estimates.
+        m = min(chain(p.itervalues(), (0,)))
+        s = sum(x-m for x in p.itervalues()) or 1
+        for type in p:
+            p[type] -= m
+            p[type] /= s
+        if not discrete:
+            return p
+        try:
+            # Ties are broken in favor of the majority class
+            # (random winner for majority ties).
+            m = max(p.itervalues())
+            p = sorted((self._classes[type], type) for type, w in p.iteritems() if w == m > 0)
+            p = [type for frequency, type in p if frequency == p[0][0]]
+            return choice(p)
+        except:
+            return self.baseline
+
+ANN = NN = AP = AveragedPerceptron = Perceptron = SLP
+
+# Perceptron learns one training example at a time,
+# adjusting weights if the example is predicted wrong.
+# Higher accuracy can be achieved by doing multiple iterations:
+
+#from pattern.vector import Perceptron, shuffled
+#
+#p = Perceptron()
+#for i in range(5):
+#    for v in shuffled(data):
+#        p.train(v)
 
 #--- SUPPORT VECTOR MACHINE ------------------------------------------------------------------------
 # Pattern comes bundled with LIBSVM 3.17:
@@ -2177,7 +2400,9 @@ class SVM(Classifier):
             -      cost = 1, 
             -   epsilon = 0.01, 
             -     cache = 100, 
-            - shrinking = True
+            - shrinking = True,
+            - extension = (LIBSVM, LIBLINEAR),
+            -     train = []
         """
         import svm
         self._svm = svm
@@ -2191,11 +2416,11 @@ class SVM(Classifier):
             kwargs.get("extension", (LIBSVM, LIBLINEAR)))
         # Optional parameters are read-only:
         if len(args) > 0: 
-            kwargs.setdefault(  "type", args[0])
+            kwargs.setdefault( "train", args[0])
         if len(args) > 1: 
-            kwargs.setdefault("kernel", args[1])
+            kwargs.setdefault(  "type", args[1])
         if len(args) > 2: 
-            kwargs.setdefault("degree", args[2])
+            kwargs.setdefault("kernel", args[2])
         for k1, k2, v in (
             (       "type", "s", CLASSIFICATION),
             (     "kernel", "t", LINEAR),
@@ -2370,18 +2595,20 @@ class SVM(Classifier):
             self._train()
         return self._classify(document, probability=not discrete)
             
-    def save(self, path):
-        svm, model = self._svm, self._model
-        if model is not None:
-            # Convert the SVM model to a string, save the string:
-            _save = self.extension == LIBLINEAR and \
-                svm.liblinearutil.save_model or \
-                svm.libsvmutil.svm_save_model
-            _save(path, model[0])
-        self._svm = None
-        self._model = ((open(path).read(),) + model[1:]) if model else None
-        Classifier.save(self, path)
-        self._svm = svm
+    def save(self, path, final=False):
+        if self._model is None:
+            self._train()
+        if self.extension == LIBSVM:
+            self._svm.libsvmutil.svm_save_model(path, self._model[0])
+        if self.extension == LIBLINEAR:
+            self._svm.liblinearutil.save_model(path, self._model[0])
+        # Save LIBSVM/LIBLINEAR model as a string.
+        # Unlink LIBSVM/LIBLINEAR binaries for cPickle.
+        svm, model  = self._svm, self._model
+        self._svm   = None
+        self._model = (open(path, "rb").read(),) + model[1:]
+        Classifier.save(self, path, final)
+        self._svm   = svm
         self._model = model
 
     @classmethod
@@ -2392,21 +2619,32 @@ class SVM(Classifier):
         # Called from Classifier.load().
         # The actual SVM model was stored as a string.
         # 1) Import pattern.vector.svm.
-        # 2) Extract the model string.
-        # 3) Save it as a temporary file.
-        # 4) Use pattern.vector.svm's LIBSVM or LIBLINEAR to load the file.
-        # 5) Delete the temporary file.
-        import svm
-        self._svm = svm # 1
+        # 2) Extract the model string and save it as a temporary file.
+        # 3) Use pattern.vector.svm's LIBSVM or LIBLINEAR to load the file.
+        # 4) Delete the temporary file.
+        import svm                                         # 1
+        self._svm = svm
         if self._model is not None:
-            f = open(path + ".tmp", "w")
-            f.write(self._model[0]) # 2 + 3
+            p = path + ".tmp"
+            f = open(p, "wb")
+            f.write(self._model[0])                       # 2
             f.close()
-            _load = self.extension == LIBLINEAR and \
-                svm.liblinearutil.load_model or \
-                svm.libsvmutil.svm_load_model
-            self._model = (_load(path + ".tmp"),) + self._model[1:] # 4
-            os.remove(f.name) # 5
+            if self.extension == LIBLINEAR and not svm.LIBLINEAR:
+                raise ImportError, "can't import liblinear"
+            if self.extension == LIBLINEAR:
+                m = self._svm.liblinearutil.load_model(p)
+            if self.extension == LIBSVM:
+                m = self._svm.libsvmutil.svm_load_model(p)
+            self._model = (m,) + self._model[1:]           # 3
+            os.remove(f.name)                              # 4
+            
+    def finalize(self):
+        """ Removes training data from memory, keeping only the LIBSVM/LIBLINEAR trained model,
+            reducing file size with Classifier.save() (e.g., 15MB => 3MB).
+        """
+        if self._model is None:
+            self._train()
+        self._vectors = []
 
 #---------------------------------------------------------------------------------------------------
 # "Nothing beats SVM + character n-grams."
@@ -2462,79 +2700,54 @@ class GeneticAlgorithm(object):
         """
         self.population = candidates
         self.generation = 0
-        self._avg = None # Average fitness for this generation.
-        # GeneticAlgorithm.fitness(), crossover(), mutate() can be given as functions:
-        for f in ("fitness", "crossover", "mutate"):
-            if f in kwargs: 
-                setattr(self, f, kwargs[f])
+        # Set GA.fitness(), crossover(), mutate() from function.
+        for f in ("fitness", "combine", "mutate"):
+            if f in kwargs:
+                setattr(self, f, types.MethodType(kwargs[f], self))
     
     def fitness(self, candidate):
         """ Must be implemented in a subclass, returns 0.0-1.0.
         """
         return 1.0
     
-    def crossover(self, candidate1, candidate2, d=0.5):
+    def combine(self, candidate1, candidate2):
         """ Must be implemented in a subclass, returns a new candidate.
         """
         return None
         
-    def mutate(self, candidate, d=0.1):
+    def mutate(self, candidate):
         """ Must be implemented in a subclass, returns a new candidate.
         """
         return None or candidate
         
-    def update(self, top=0.7, crossover=0.5, mutation=0.1, d=0.9):
+    def update(self, top=0.5, mutation=0.5):
         """ Updates the population by selecting the top fittest candidates,
             and recombining them into a new generation.
         """
         # 1) Selection.
-        p = sorted((self.fitness(x), x) for x in self.population) # Weakest-first.
-        a = self._avg = float(sum(f for f, x in p)) / len(p)
-        x = min(f for f, x in p)
-        y = max(f for f, x in p)
-        i = 0
-        while len(p) > len(self.population) * top:
-            # Weaker candidates have a higher chance of being removed,
-            # chance being equal to (1-fitness), starting with the weakest.
-            if x + (y - x) * random() >= p[i][0]:
-                p.pop(i)
-            else:
-                i = (i + 1) % len(p)
+        # Choose the top fittest candidates.
+        # Including weaker candidates can be beneficial (diversity).
+        p = sorted(self.population, key=self.fitness, reverse=True)
+        p = p[:max(2, int(round(len(p) * top)))]
         # 2) Reproduction.
+        # Choose random parents for crossover.
+        # Mutation avoids local optima by maintaining genetic diversity.
         g = []
-        while len(g) < len(self.population):
-            # Choose randomly between recombination of parents or mutation.
-            # Mutation avoids local optima by maintaining genetic diversity.
-            if random() < d:
-                i = int(round(random() * (len(p)-1)))
-                j = choice(range(0, i) + range(i + 1, len(p)))
-                g.append(self.crossover(p[i][1], p[j][1], d=crossover))
-            else:
-                g.append(self.mutate(choice(p)[1], d=mutation))
+        n = len(p)
+        for candidate in self.population:
+            i = randint(0, n-1)
+            j = choice([x for x in xrange(n) if x != i]) if n > 1 else 0
+            g.append(self.combine(p[i], p[j]))
+            if random() <= mutation:
+                g[-1] = self.mutate(g[-1])
         self.population = g
         self.generation += 1
         
     @property
     def avg(self):
         # Average fitness is supposed to increase each generation.
-        if not self._avg: self._avg = float(sum(map(self.fitness, self.population))) / len(self.population)
-        return self._avg
+        return float(sum(map(self.fitness, self.population))) / len(self.population)
     
     average_fitness = avg
 
 GA = GeneticAlgorithm
-
-# GA for floats between 0.0-1.0 that prefers higher numbers:
-#class HighFloatGA(GeneticAlgorithm):
-#    def fitness(self, x):
-#        return x
-#    def crossover(self, x, y, d=0.5):
-#        return (x + y) / 2
-#    def mutate(self, x, d=0.1):
-#        return min(1, max(0, x + random() * 0.2 - 0.1))
-#
-#ga = HighFloatGA([random() for i in range(100)])
-#for i in range(100):
-#    ga.update()
-#    print ga.average_fitness
-#print ga.population

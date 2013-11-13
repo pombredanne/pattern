@@ -53,7 +53,7 @@ from pattern.en import parsetree
 Example
 -------
 
-This example trains a classifier on adjectives mined from Twitter. First, tweets that contain hashtag #win or #fail are collected. For example: "$20 tip off a sweet little old lady today #win". The word part-of-speech tags are then parsed, keeping only adjectives. Each tweet is transformed to a vector, a dictionary of adjective → count items, labeled `WIN` or `FAIL`. The classifier uses the vectors to learn what other tweets look more like  `WIN` or more like `FAIL`.
+This example trains a classifier on adjectives mined from Twitter. First, tweets that contain hashtag #win or #fail are collected. For example: "$20 tip off a sweet little old lady today #win". The word part-of-speech tags are then parsed, keeping only adjectives. Each tweet is transformed to a vector, a dictionary of adjective → count items, labeled `WIN` or `FAIL`. The classifier uses the vectors to learn which other tweets look more like  `WIN` or more like `FAIL`.
 
 ```python
 from pattern.web    import Twitter
@@ -111,6 +111,7 @@ Pattern is bundled with the following data sets, algorithms and Python packages:
 - **LIBLINEAR**, Rong-En Fan et al.
 - **NetworkX centrality**, Aric Hagberg, Dan Schult & Pieter Swart
 - **PDFMiner**, Yusuke Shinyama
+- **Python docx**, Mike Maccana
 - **PyWordNet**, Oliver Steele
 - **simplejson**, Bob Ippolito
 - **spelling corrector**, Peter Norvig
@@ -153,3 +154,7 @@ Acknowledgements
 - Fabio Marfia
 - Steven Loria
 - Colin Molter + tevizz.com
+- Peter Bull
+- Maurizio Sambati
+- Dan Fu
+- Salvatore Di Dio

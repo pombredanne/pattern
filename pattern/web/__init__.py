@@ -513,7 +513,7 @@ class URL(object):
         return u
 
     def __repr__(self):
-        return "URL('%s', method='%s')" % (str(self), str(self.method))
+        return "URL(%s, method=%s)" % (repr(self.string), repr(self.method))
 
     def copy(self):
         return URL(self.string, self.method, self.query)
@@ -638,7 +638,7 @@ def find_between(a, b, string):
 
 BLOCK = [
     "title", "h1", "h2", "h3", "h4", "h5", "h6", "p",
-    "center", "blockquote", "div", "table", "ul", "ol", "pre", "code", "form"
+    "center", "blockquote", "div", "table", "ul", "ol", "dl", "pre", "code", "form"
 ]
 
 SELF_CLOSING = ["br", "hr", "img"]
@@ -683,7 +683,6 @@ class HTMLParser(sgmllib.SGMLParser):
         html = html.replace("&lt;!doctype", "<!doctype")
         html = html.replace("&lt;!--", "<!--")
         return html
-
 
     def parse_declaration(self, i):
         # We can live without sgmllib's parse_declaration().
@@ -730,6 +729,9 @@ class HTMLTagstripper(HTMLParser):
         return HTMLParser.clean(self, html).replace("&", "&amp;")
 
     def handle_starttag(self, tag, attributes):
+        if tag in BLOCK and self._data and self._data[-1][-1:] != "\n":
+            # Block-level elements always break to a new line.
+            self._data.append("\n")
         if tag in self._exclude:
             # Create the tag attribute string,
             # including attributes defined in the HTMLTagStripper._exclude dict.
@@ -765,8 +767,8 @@ strip_tags = HTMLTagstripper().strip
 def strip_element(string, tag, attributes=""):
     """ Removes all elements with the given tagname and attributes from the string.
         Open and close tags are kept in balance.
-        No HTML parser is used: strip_element(s, "a", "href='foo' class='bar'")
-        matches "<a href='foo' class='bar'" but not "<a class='bar' href='foo'".
+        No HTML parser is used: strip_element(s, "a", 'class="x"') matches
+        '<a class="x">' or '<a href="x" class="x">' but not "<a class='x'>".
     """
     s = string.lower() # Case-insensitive.
     t = tag.strip("</>")
@@ -774,7 +776,9 @@ def strip_element(string, tag, attributes=""):
     i = 0
     j = 0
     while j >= 0:
-        i = s.find("<%s%s" % (t, a), i)
+        #i = s.find("<%s%s" % (t, a), i)
+        m = re.search(r"<%s[^\>]*?%s" % (t, a), s[i:])
+        i = i + m.start() if m else -1
         j = s.find("</%s>" % t, i+1)
         opened, closed = s[i:j].count("<%s" % t), 1
         while opened > closed and j >= 0:
@@ -933,6 +937,10 @@ class Result(dict):
         """
         dict.__init__(self)
         self.url   = url
+
+    @property
+    def txt(self):
+        return self.text
 
     @property
     def description(self):
@@ -1438,11 +1446,13 @@ class Twitter(SearchEngine):
         """
         if type != SEARCH:
             raise SearchEngineTypeError
-        if not query or count < 1 or (isinstance(start, (int, float)) and start < 1):
+        if not query or count < 1 or (isinstance(start, (int, long, float)) and start < 1):
             return Results(TWITTER, query, type)
-        if isinstance(start, (int, float)) and start < 10000:
+        if isinstance(start, (int, long, float)) and start < 10000:
             id = (query, kwargs.get("geo"), kwargs.get("date"), int(start)-1, count)
             id = self._pagination.pop(id, "")
+        if isinstance(start, (int, long, float)):
+            id = int(start) - 1
         else:
             id = int(start) - 1 if start and start.isdigit() else ""
         # 1) Construct request URL.
@@ -1498,7 +1508,7 @@ class Twitter(SearchEngine):
         #
         # Store the last id retrieved.
         # If search() is called again with start+1, start from this id.
-        if isinstance(start, (int, float)) and results:
+        if isinstance(start, (int, long, float)) and results:
             id = (query, kwargs.get("geo"), kwargs.get("date"), int(start), count)
             self._pagination[id] = str(int(results[-1].id) - 1)
         return results
@@ -1605,7 +1615,7 @@ MEDIAWIKI = "http://{SUBDOMAIN}.{DOMAIN}{API}"
 MEDIAWIKI_NAMESPACE  = ["Main", "User", "Wikipedia", "File", "MediaWiki", "Template", "Help", "Category", "Portal", "Book"]
 MEDIAWIKI_NAMESPACE += [s+" talk" for s in MEDIAWIKI_NAMESPACE] + ["Talk", "Special", "Media"]
 MEDIAWIKI_NAMESPACE += ["WP", "WT", "MOS", "C", "CAT", "Cat", "P", "T", "H", "MP", "MoS", "Mos"]
-_mediawiki_namespace = re.compile(r"^"+"|".join(MEDIAWIKI_NAMESPACE)+":", re.I)
+_mediawiki_namespace = re.compile(r"^("+"|".join(MEDIAWIKI_NAMESPACE)+"):", re.I)
 
 # Pattern to identify disambiguation pages.
 MEDIAWIKI_DISAMBIGUATION = "<a href=\"/wiki/Help:Disambiguation\" title=\"Help:Disambiguation\">disambiguation</a> page"
@@ -1733,12 +1743,13 @@ class MediaWiki(SearchEngine):
                 m = p.search(article.source, i)
                 if m:
                     j = m.start()
+                    t = plaintext(t)
                     article.sections.append(self.MediaWikiSection(article,
                         title = t,
                         start = i,
                          stop = j,
                         level = d))
-                    t = x.get("line", "")
+                    t = plaintext(x.get("line", ""))
                     d = int(x.get("level", 2)) - 1
                     i = j
         return article
@@ -1779,19 +1790,48 @@ class MediaWikiArticle(object):
             This is called internally from MediaWikiArticle.string.
         """
         s = string
-        s = strip_between("<table class=\"metadata", "</table>", s)   # Metadata.
-        s = strip_between("<table id=\"toc", "</table>", s)           # Table of contents.
-        s = strip_between("<table class=\"infobox", "</table>", s)    # Infobox.
-        s = strip_between("<table class=\"wikitable", "</table>", s)  # Table.
-        s = strip_element(s, "table", "class=\"navbox")               # Navbox.
-        s = strip_between("<div id=\"annotation", "</div>", s)        # Annotations.
-        s = strip_between("<div class=\"dablink", "</div>", s)        # Disambiguation message.
-        s = strip_between("<div class=\"magnify", "</div>", s)        # Thumbnails.
-        s = strip_between("<div class=\"thumbcaption", "</div>", s)   # Thumbnail captions.
-        s = re.sub(r"<img class=\"tex\".*?/>", "[math]", s)           # LaTex math images.
+        # Strip meta <table> elements.
+        s = strip_element(s, "table", "id=\"toc")             # Table of contents.
+        s = strip_element(s, "table", "class=\"infobox")      # Infobox.
+        s = strip_element(s, "table", "class=\"navbox")       # Navbox.
+        s = strip_element(s, "table", "class=\"mbox")         # Message.
+        s = strip_element(s, "table", "class=\"metadata")     # Metadata.
+        s = strip_element(s, "table", "class=\".*?wikitable") # Table.
+        s = strip_element(s, "table", "class=\"toc")          # Table (usually footer).
+        # Strip meta <div> elements.
+        s = strip_element(s, "div", "id=\"toc")               # Table of contents.
+        s = strip_element(s, "div", "class=\"infobox")        # Infobox.
+        s = strip_element(s, "div", "class=\"navbox")         # Navbox.
+        s = strip_element(s, "div", "class=\"mbox")           # Message.
+        s = strip_element(s, "div", "class=\"metadata")       # Metadata.
+        s = strip_element(s, "div", "id=\"annotation")        # Annotations.
+        s = strip_element(s, "div", "class=\"dablink")        # Disambiguation message.
+        s = strip_element(s, "div", "class=\"magnify")        # Thumbnails.
+        s = strip_element(s, "div", "class=\"thumb ")         # Thumbnail captions.
+        s = strip_element(s, "div", "class=\"barbox")         # Bar charts.
+        s = strip_element(s, "div", "class=\"noprint")        # Hidden from print.
+        s = strip_element(s, "sup", "class=\"noprint")
+        # Strip absolute elements (don't know their position).
+        s = strip_element(s, "div", "style=\"position:absolute")
+        # Strip meta <span> elements.
+        s = strip_element(s, "span", "class=\"error")
+        # Strip math formulas, add [math] placeholder.
+        s = re.sub(r"<img class=\"tex\".*?/>", "[math]", s)   # LaTex math images.
         s = plaintext(s, **kwargs)
-        s = re.sub(r"\[edit\]\s*", "", s) # [edit] is language dependent (e.g. nl => "[bewerken]")
-        s = s.replace("[", " [").replace("  [", " [") # Space before inline references.
+        # Strip [edit] link (language dependent.)
+        s = re.sub(r"\[edit\]\s*", "", s)
+        s = re.sub(r"\[%s\]\s*" % {
+            "en":  "edit",
+            "es": u"editar código",
+            "de":  "Bearbeiten",
+            "fr":  "modifier le code",
+            "it":  "modifica sorgente",
+            "nl":  "bewerken",
+        }.get(self.language, "edit"), "", s)
+        # Insert space before inline references.
+        s = s.replace("[", " [").replace("  [", " [")
+        # Strip inline references.
+        #s = re.sub(r" \[[0-9]+\]", "", s)
         return s
 
     def plaintext(self, **kwargs):
@@ -1841,8 +1881,9 @@ class MediaWikiSection(object):
     def content(self):
         # ArticleSection.string, minus the title.
         s = self.plaintext()
-        if s == self.title or s.startswith(self.title+"\n"):
-            return s[len(self.title):].lstrip()
+        t = plaintext(self.title)
+        if s == t or (len(s) > len(t)) and s.startswith(t) and s[len(t)] not in (",", " "):
+            return s[len(t):].lstrip()
         return s
 
     @property
@@ -1851,27 +1892,27 @@ class MediaWikiSection(object):
         """
         if self._tables is None:
             self._tables = []
-            b = "<table class=\"wikitable\"", "</table>"
-            p = self.article._plaintext
-            f = find_between
-            for s in f(b[0], b[1], self.source):
-                t = self.article.parser.MediaWikiTable(self,
-                     title = p((f(r"<caption.*?>", "</caption>", s) + [""])[0]),
-                    source = b[0] + s + b[1]
-                )
-                for i, row in enumerate(f(r"<tr", "</tr>", s)):
+            for style in ("wikitable", "sortable wikitable"):
+                b = "<table class=\"%s\"" % style, "</table>"
+                p = self.article._plaintext
+                f = find_between
+                for s in f(b[0], b[1], self.source):
+                    t = self.article.parser.MediaWikiTable(self, 
+                         title = p((f(r"<caption.*?>", "</caption>", s) + [""])[0]),
+                        source = b[0] + s + b[1])
                     # 1) Parse <td> and <th> content and format it as plain text.
                     # 2) Parse <td colspan=""> attribute, duplicate spanning cells.
                     # 3) For <th> in the first row, update MediaWikiTable.headers.
-                    r1 = f(r"<t[d|h]", r"</t[d|h]>", row)
-                    r1 = (((f(r'colspan="', r'"', v)+[1])[0], v[v.find(">")+1:]) for v in r1)
-                    r1 = ((int(n), v) for n, v in r1)
-                    r2 = []; [[r2.append(p(v)) for j in range(n)] for n, v in r1]
-                    if i == 0 and "</th>" in row:
-                        t.headers = r2
-                    else:
-                        t.rows.append(r2)
-                self._tables.append(t)
+                    for i, row in enumerate(f(r"<tr", "</tr>", s)):
+                        r1 = f(r"<t[d|h]", r"</t[d|h]>", row)
+                        r1 = (((f(r'colspan="', r'"', v)+[1])[0], v[v.find(">")+1:]) for v in r1)
+                        r1 = ((int(n), v) for n, v in r1)
+                        r2 = []; [[r2.append(p(v)) for j in range(n)] for n, v in r1]
+                        if i == 0 and "</th>" in row:
+                            t.headers = r2
+                        else:
+                            t.rows.append(r2)
+                    self._tables.append(t)
         return self._tables
 
     @property
@@ -1881,7 +1922,7 @@ class MediaWikiSection(object):
     depth = level
 
     def __repr__(self):
-        return "MediaWikiSection(title='%s')" % bytestring(self.title)
+        return "MediaWikiSection(title=%s)" % repr(self.title)
 
 class MediaWikiTable(object):
 
@@ -1894,12 +1935,19 @@ class MediaWikiTable(object):
         self.headers = headers # List of table headers.
         self.rows    = rows    # List of table rows, each a list of cells.
 
+    def plaintext(self, **kwargs):
+        return self.article._plaintext(self.source, **kwargs)
+
     @property
     def html(self):
         return self.source
 
+    @property
+    def string(self):
+        return self.plaintext()
+
     def __repr__(self):
-        return "MediaWikiTable(title='%s')" % bytestring(self.title)
+        return "MediaWikiTable(title=%s)" % repr(self.title)
 
 #--- MEDIAWIKI: WIKIPEDIA --------------------------------------------------------------------------
 # Wikipedia is a collaboratively edited, multilingual, free Internet encyclopedia.
@@ -1954,11 +2002,11 @@ class WikipediaArticle(MediaWikiArticle):
 
 class WikipediaSection(MediaWikiSection):
     def __repr__(self):
-        return "WikipediaSection(title='%s')" % bytestring(self.title)
+        return "WikipediaSection(title=%s)" % repr(self.title)
 
 class WikipediaTable(MediaWikiTable):
     def __repr__(self):
-        return "WikipediaTable(title='%s')" % bytestring(self.title)
+        return "WikipediaTable(title=%s)" % repr(self.title)
 
 #article = Wikipedia().search("cat")
 #for section in article.sections:
@@ -1971,6 +2019,48 @@ class WikipediaTable(MediaWikiTable):
 #
 #article = Wikipedia(language="nl").search("borrelnootje")
 #print article.string
+
+#--- MEDIAWIKI: WIKTIONARY -------------------------------------------------------------------------
+# Wiktionary is a collaborative project to produce a free-content multilingual dictionary.
+
+class Wiktionary(MediaWiki):
+
+    def __init__(self, license=None, throttle=5.0, language="en"):
+        """ Mediawiki search engine for http://[language].wiktionary.com.
+        """
+        SearchEngine.__init__(self, license or MEDIAWIKI_LICENSE, throttle, language)
+        self._subdomain = language
+
+    @property
+    def _url(self):
+        s = MEDIAWIKI
+        s = s.replace("{SUBDOMAIN}", self._subdomain)
+        s = s.replace("{DOMAIN}", "wiktionary.org")
+        s = s.replace("{API}", "/w/api.php")
+        return s
+
+    @property
+    def MediaWikiArticle(self):
+        return WiktionaryArticle
+    @property
+    def MediaWikiSection(self):
+        return WiktionarySection
+    @property
+    def MediaWikiTable(self):
+        return WiktionaryTable
+
+class WiktionaryArticle(MediaWikiArticle):
+    def __repr__(self):
+        return "WiktionaryArticle(title=%s)" % repr(self.title)
+
+class WiktionarySection(MediaWikiSection):
+    def __repr__(self):
+        return "WiktionarySection(title=%s)" % repr(self.title)
+
+class WiktionaryTable(MediaWikiTable):
+    def __repr__(self):
+        return "WiktionaryTable(title=%s)" % repr(self.title)
+
 
 #--- MEDIAWIKI: WIKIA ------------------------------------------------------------------------------
 # Wikia (formerly Wikicities) is a free web hosting service and a wiki farm for wikis.
@@ -2040,11 +2130,11 @@ class WikiaArticle(MediaWikiArticle):
 
 class WikiaSection(MediaWikiSection):
     def __repr__(self):
-        return "WikiaSection(title='%s')" % bytestring(self.title)
+        return "WikiaSection(title=%s)" % repr(self.title)
 
 class WikiaTable(MediaWikiTable):
     def __repr__(self):
-        return "WikiaTable(title='%s')" % bytestring(self.title)
+        return "WikiaTable(title=%s)" % repr(self.title)
 
 #--- DBPEDIA --------------------------------------------------------------------------------------------------
 # DBPedia is a database of structured information mined from Wikipedia.
@@ -2236,7 +2326,7 @@ class FlickrResult(Result):
 #    print img.url
 #
 #data = img.download()
-#f = open("kitten"+extension(img.url), "w")
+#f = open("kitten"+extension(img.url), "wb")
 #f.write(data)
 #f.close()
 
@@ -2259,7 +2349,7 @@ class FacebookResult(Result):
 class Facebook(SearchEngine):
 
     def __init__(self, license=None, throttle=1.0, language=None):
-        SearchEngine.__init__(self, license, throttle, language)
+        SearchEngine.__init__(self, license or FACEBOOK_LICENSE, throttle, language)
 
     @property
     def _token(self):
@@ -2311,17 +2401,23 @@ class Facebook(SearchEngine):
             url = URL(url, method=GET, query={
                          "q": query,
                       "type": "post",
-                    "fields": ",".join(("id", "link", "message", "created_time", "from")),
+              "access_token": self.license,
                     "offset": (start-1) * min(count, max),
-                     "limit": (start-0) * min(count, max),
+                     "limit": (start-0) * min(count, max)
             })
         if type in (NEWS, FEED, COMMENTS, LIKES, FRIENDS):
             url = FACEBOOK + (u(query) or "me").replace(FACEBOOK, "") + "/" + type.replace("news", "feed")
             url = URL(url, method=GET, query={
               "access_token": self.license,
                     "offset": (start-1) * min(count, max),
-                     "limit": (start-0) * min(count, max)
+                     "limit": (start-0) * min(count, max),
             })
+        if type in (SEARCH, NEWS, FEED):
+            url.query["fields"] = ",".join((
+                "id", "from", "name", "story", "message", "link", "picture", "created_time", 
+                "comments.limit(1).summary(true)", 
+                   "likes.limit(1).summary(true)"
+            ))
         # 2) Parse JSON response.
         kwargs.setdefault("cached", cached)
         kwargs.setdefault("unicode", True)
@@ -2337,17 +2433,17 @@ class Facebook(SearchEngine):
             r = FacebookResult(url=None)
             r.id   = self.format(x.get("id"))
             r.url  = self.format(x.get("link"))
-            r.text = self.format(x.get("story", x.get("message")))
+            r.text = self.format(x.get("story", x.get("message", x.get("name"))))
             r.date = self.format(x.get("created_time"))
             # Store likes & comments count as int, author as (id, name)-tuple
             # (by default Result will store everything as Unicode strings).
             s = lambda r, k, v: dict.__setitem__(r, k, v)
             s(r, "likes", \
-                     self.format(x.get("like_count", x.get("likes", {}).get("count", 0))) + 0)
+                     self.format(x.get("like_count", x.get("likes", {}).get("summary", {}).get("total_count", 0))) + 0)
             s(r, "comments", \
-                     self.format(x.get("comments", {}).get("count", 0)) + 0)
+                     self.format(x.get("comments", {}).get("summary", {}).get("total_count", 0)) + 0)
             s(r, "author",  (
-                   u(self.format(x.get("from", {}).get("id", ""))), \
+                   u(self.format(x.get("from", {}).get("id", ""))),
                    u(self.format(x.get("from", {}).get("name", "")))))
             # Set Result.text to author name for likes.
             if type in (LIKES, FRIENDS):
@@ -2357,17 +2453,17 @@ class Facebook(SearchEngine):
                 r.text = \
                      self.format(x.get("name"))
             # Set Result.url to full-size image.
-            if r.url.startswith("http://www.facebook.com/photo"):
+            if re.match(r"^http(s?)://www\.facebook\.com/photo", r.url) is not None:
                 r.url = x.get("picture", "").replace("_s", "_b") or r.url
             # Set Result.title to object id.
-            if r.url.startswith("http://www.facebook.com/"):
+            if re.match(r"^http(s?)://www\.facebook\.com/", r.url) is not None:
                 r.title = r.url.split("/")[-1].split("?")[0]
             results.append(r)
         return results
 
     def profile(self, id=None, **kwargs):
         """ For the given author id or alias,
-            returns a (id, name, date of birth, gender, locale)-tuple.
+            returns a (id, name, date of birth, gender, locale, likes)-tuple.
         """
         url = FACEBOOK + (u(id or "me")).replace(FACEBOOK, "")
         url = URL(url, method=GET, query={"access_token": self.license})
@@ -2384,8 +2480,11 @@ class Facebook(SearchEngine):
             u(data.get("name", "")),
             u(data.get("birthday", "")),
             u(data.get("gender", "")[:1]),
-            u(data.get("locale", ""))
+            u(data.get("locale", "")),
+          int(data.get("likes", 0)) # For pages.
         )
+        
+    page = profile
 
 #--- PRODUCT REVIEWS -------------------------------------------------------------------------------
 # ProductWiki is an open web-based product information resource.
@@ -2734,7 +2833,7 @@ class Element(Node):
         """ Yields the element content as a unicode string.
         """
         return u"".join([u(x) for x in self._p.contents])
-        
+
     string = content
 
     @property
@@ -2795,8 +2894,13 @@ class Element(Node):
             return self.attributes[k]
         raise AttributeError, "'Element' object has no attribute '%s'" % k
 
+    def __contains__(self, v):
+        if isinstance(v, Element):
+            v = v.content
+        return v in self.content
+
     def __repr__(self):
-        return "Element(tag='%s')" % bytestring(self.tagname)
+        return "Element(tag=%s)" % repr(self.tagname)
 
 #--- DOCUMENT --------------------------------------------------------------------------------------
 
@@ -2943,7 +3047,7 @@ class Selector(object):
         # Map tag to True if it is "*".
         tag = self.tag == "*" or self.tag
         # Map id into a case-insensitive **kwargs dict.
-        i = lambda s: re.compile("^%s$" % s, re.I)
+        i = lambda s: re.compile(r"\b%s\b" % s, re.I)
         a = {"id": i(self.id)} if self.id else {}
         a.update(map(lambda (k, v): (k, i(v)), self.attributes.iteritems()))
         # Match tag + id + all classes + relevant pseudo-elements.
@@ -2954,7 +3058,7 @@ class Selector(object):
         if len(self.classes) == 1:
             e = map(Element, e._p.findAll(tag, **dict(a, **{"class": i(list(self.classes)[0])})))
         if len(self.classes) >= 2:
-            e = filter(lambda e: self.classes.issubset(set(map(str.lower, e.attr.get("class", "").split()))), e)
+            e = filter(lambda e: self.classes.issubset(set(e.attr.get("class", "").lower().split())), e)
         if "first-child" in self.pseudo:
             e = filter(lambda e: e == self._first_child(e.parent), e)
         return e
@@ -3319,53 +3423,129 @@ def crawl(links=[], domains=[], delay=20.0, parser=HTMLLinkParser().parse, sort=
 #    link, source = p.value
 #    print link
 
-#### PDF PARSER ####################################################################################
-#  Yusuke Shinyama, PDFMiner, http://www.unixuser.org/~euske/python/pdfminer/
 
-class PDFParseError(Exception):
+#### DOCUMENT PARSER ###############################################################################
+# Not to be confused with Document, which is the top-level element in the HTML DOM.
+
+class DocumentParserError(Exception):
     pass
 
-class PDF(object):
-
-    def __init__(self, data, format=None):
-        """ Plaintext parsed from the given PDF, given as a file path or a string.
+class DocumentParser(object):
+    
+    def __init__(self, path, *args, **kwargs):
+        """ Parses a text document (e.g., .pdf or .docx),
+            given as a file path or a string.
         """
-        self.content = self._parse(data, format)
+        self.content = self._parse(path, *args, **kwargs)
 
+    def _open(self, path):
+        """ Returns a file-like object with a read() method,
+            from the given file path or string.
+        """
+        if isinstance(path, basestring) and os.path.exists(path):
+            return open(path, "rb")
+        if hasattr(path, "read"):
+            return path
+        return StringIO.StringIO(path)
+
+    def _parse(self, path, *args, **kwargs):
+        """ Returns a plaintext Unicode string parsed from the given document.
+        """
+        return plaintext(decode_utf8(self.open(path).read()))
+        
     @property
     def string(self):
         return self.content
+
     def __unicode__(self):
         return self.content
 
-    def _parse(self, data, format=None):
+#--- PDF PARSER ------------------------------------------------------------------------------------
+#  Yusuke Shinyama, PDFMiner, http://www.unixuser.org/~euske/python/pdfminer/
 
-        # The output will be ugly: it may be useful for mining but probably not for displaying.
-        # You can also try PDF(data, format="html") to preserve some layout information.
+class PDFError(DocumentParserError):
+    pass
+
+class PDF(DocumentParser):
+
+    def __init__(self, path, output="txt"):
+        self.content = self._parse(path, format=output)
+
+    def _parse(self, path, *args, **kwargs):
+        # The output is useful for mining but not for display.
+        # Alternatively, PDF(format="html") preserves some layout.
         from pdf.pdfinterp import PDFResourceManager, process_pdf
         from pdf.converter import TextConverter, HTMLConverter
         from pdf.layout    import LAParams
-        s = ""
-        m = PDFResourceManager()
         try:
-            # Given data is a PDF file path.
-            data = os.path.exists(data) and open(data) or StringIO.StringIO(data)
-        except TypeError:
-            # Given data is a PDF string.
-            data = StringIO.StringIO(data)
-        try:
-            stream = StringIO.StringIO()
-            parser = format=="html" and HTMLConverter or TextConverter
-            parser = parser(m, stream, codec="utf-8", laparams=LAParams())
-            process_pdf(m, parser, data, set(), maxpages=0, password="")
+            m = PDFResourceManager()
+            s = StringIO.StringIO()
+            p = kwargs.get("format", "txt").endswith("html") and HTMLConverter or TextConverter
+            p = p(m, s, codec="utf-8", laparams=LAParams())
+            process_pdf(m, p, self._open(path), set(), maxpages=0, password="")
         except Exception, e:
-            raise PDFParseError, str(e)
-        s = stream.getvalue()
+            raise PDFError, str(e)
+        s = s.getvalue()
         s = decode_utf8(s)
         s = s.strip()
-        s = re.sub(r"([a-z])\-\n", "\\1", s)        # Join hyphenated words.
-        s = s.replace("\n\n", "<!-- paragraph -->") # Preserve paragraph spacing.
+        s = re.sub(r"([a-z])\-\n", "\\1", s) # Hyphenation.
+        s = s.replace("\n\n", "<!-- #p -->") # Paragraphs.
         s = s.replace("\n", " ")
-        s = s.replace("<!-- paragraph -->", "\n\n")
+        s = s.replace("<!-- #p -->", "\n\n")
         s = collapse_spaces(s)
         return s
+
+#--- OOXML PARSER ----------------------------------------------------------------------------------
+#  Mike Maccana, Python docx, https://github.com/mikemaccana/python-docx
+
+class DOCXError(DocumentParserError):
+    pass
+
+class DOCX(DocumentParser):
+    
+    def _parse(self, path, *args, **kwargs):
+        from docx.docx import opendocx
+        from docx.docx import getdocumenttext
+        try:
+            s = opendocx(self._open(path))
+            s = getdocumenttext(s)
+        except Exception, e:
+            raise DOCXError, str(e)
+        s = "\n\n".join(p for p in s)
+        s = decode_utf8(s)
+        s = collapse_spaces(s)
+        return s
+
+#---------------------------------------------------------------------------------------------------
+
+def parsepdf(path, *args, **kwargs):
+    """ Returns the content as a Unicode string from the given .pdf file.
+    """
+    return PDF(path, *args, **kwargs).content
+    
+def parsedocx(path, *args, **kwargs):
+    """ Returns the content as a Unicode string from the given .docx file.
+    """
+    return DOCX(path, *args, **kwargs).content
+
+def parsehtml(path, *args, **kwargs):
+    """ Returns the content as a Unicode string from the given .html file.
+    """
+    return plaintext(DOM(path, *args, **kwargs).body)
+
+def parsedoc(path, format=None):
+    """ Returns the content as a Unicode string from the given document (.html., .pdf, .docx).
+    """
+    if isinstance(path, basestring):
+        if format == "pdf"  or path.endswith(".pdf"):
+            return parsepdf(path)
+        if format == "docx" or path.endswith(".docx"):
+            return parsedocx(path)
+        if format == "html" or path.endswith((".htm", ".html", ".xhtml")):
+            return parsehtml(path)
+    # Brute-force approach if the format is unknown.
+    for f in (parsepdf, parsedocx, parsehtml):
+        try: 
+            return f(path)
+        except:
+            pass

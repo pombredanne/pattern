@@ -12,6 +12,8 @@ from collections import defaultdict, deque
 from itertools   import izip, chain
 from operator    import itemgetter
 from heapq       import nlargest
+from bisect      import bisect_right
+from random      import gauss
 
 ####################################################################################################
 # Simple implementation of Counter for Python 2.5 and 2.6.
@@ -61,6 +63,14 @@ try:
 except:
     pass
 
+def cumsum(iterable):
+    """ Returns an iterator over the cumulative sum of values in the given list.
+    """
+    n = 0
+    for x in iterable:
+        n += x
+        yield n
+
 #### PROFILER ######################################################################################
 
 def duration(function, *args, **kwargs):
@@ -71,7 +81,7 @@ def duration(function, *args, **kwargs):
     return time() - t
 
 def profile(function, *args, **kwargs):
-    """ Returns the performance statistics (as a string) of the given Python function.
+    """ Returns the performance analysis (as a string) of the given Python function.
     """
     def run():
         function(*args, **kwargs)
@@ -88,7 +98,7 @@ def profile(function, *args, **kwargs):
     profile.run("__profile_run__()", id)
     p = pstats.Stats(id)
     p.stream = open(id, "w")
-    p.sort_stats("time").print_stats(20)
+    p.sort_stats("cumulative").print_stats(30)
     p.stream.close()
     s = open(id).read()
     os.remove(id)
@@ -244,9 +254,9 @@ def fleiss_kappa(m):
     
 agreement = fleiss_kappa
 
-#### STRINGS & WORDS ###############################################################################
+#### TEXT METRICS ##################################################################################
 
-#--- STRING SIMILARITY -----------------------------------------------------------------------------
+#--- SIMILARITY ------------------------------------------------------------------------------------
 
 def levenshtein(string1, string2):
     """ Measures the amount of difference between two strings.
@@ -259,9 +269,9 @@ def levenshtein(string1, string2):
         # Make sure n <= m to use O(min(n,m)) space.
         string1, string2, n, m = string2, string1, m, n
     current = range(n+1)
-    for i in range(1, m+1):
+    for i in xrange(1, m+1):
         previous, current = current, [i]+[0]*n
-        for j in range(1, n+1):
+        for j in xrange(1, n+1):
             insert, delete, replace = previous[j]+1, current[j-1]+1, previous[j-1]
             if string1[j-1] != string2[i-1]:
                 replace += 1
@@ -280,7 +290,7 @@ def dice_coefficient(string1, string2):
         based on the number of shared bigrams, e.g., "night" and "nacht" have one common bigram "ht".
     """
     def bigrams(s):
-        return set(s[i:i+2] for i in range(len(s)-1))
+        return set(s[i:i+2] for i in xrange(len(s)-1))
     nx = bigrams(string1)
     ny = bigrams(string2)
     nt = nx.intersection(ny)
@@ -296,7 +306,7 @@ def similarity(string1, string2, metric=LEVENSHTEIN):
     if metric == DICE:
         return dice_coefficient(string1, string2)
 
-#--- STRING READABILITY ----------------------------------------------------------------------------
+#--- READABILITY -----------------------------------------------------------------------------------
 # 0.9-1.0 = easily understandable by 11-year old.
 # 0.6-0.7 = easily understandable by 13- to 15-year old.
 # 0.0-0.3 = best understood by university graduates.
@@ -321,19 +331,20 @@ def flesch_reading_ease(string):
     string = string.replace("!", ".")
     string = string.replace("?", ".")
     string = string.replace(",", " ")
+    string = " ".join(string.split())
     y = [count_syllables(w) for w in string.split() if w != ""]
     w = len([w for w in string.split(" ") if w != ""])
     s = len([s for s in string.split(".") if len(s) > 2])
     #R = 206.835 - 1.015 * w/s - 84.6 * sum(y)/w
     # Use the Farr, Jenkins & Patterson algorithm,
     # which uses simpler syllable counting (count_syllables() is the weak point here). 
-    R = 1.599 * sum(1 for v in y if v == 1) * 100 / w - 1.015*w/s - 31.517
-    R = max(0.0, min(R*0.01, 1.0))
+    R = 1.599 * sum(1 for v in y if v == 1) * 100 / w - 1.015 * w / s - 31.517
+    R = max(0.0, min(R * 0.01, 1.0))
     return R
 
 readability = flesch_reading_ease
 
-#--- STRING INTERTEXTUALITY ------------------------------------------------------------------------
+#--- INTERTEXTUALITY -------------------------------------------------------------------------------
 # Intertextuality may be useful for plagiarism detection.
 # For example, on the Corpus of Plagiarised Short Answers (Clough & Stevenson, 2009),
 # accuracy (F1) is 94.5% with n=3 and intertextuality threshold > 0.1.
@@ -350,7 +361,7 @@ def ngrams(string, n=3, punctuation=PUNCTUATION, **kwargs):
     s = s.replace("!", " !")
     s = [w.strip(punctuation) for w in s.split()]
     s = [w.strip() for w in s if w.strip()]
-    return [tuple(s[i:i+n]) for i in range(len(s)-n+1)]
+    return [tuple(s[i:i+n]) for i in xrange(len(s) - n + 1)]
 
 class Weight(float):
     """ A float with a magic "assessments" property,
@@ -369,7 +380,7 @@ class Weight(float):
     def __idiv__(self, value):
         return Weight(self / value, self.assessments)
 
-def intertextuality(texts=[], n=5, continuous=False, weight=lambda ngram: 1):
+def intertextuality(texts=[], n=5, weight=lambda ngram: 1.0, **kwargs):
     """ Returns a dictionary of (i, j) => float.
         For indices i and j in the given list of texts,
         the corresponding float is the percentage of text i that is also in text j.
@@ -379,7 +390,7 @@ def intertextuality(texts=[], n=5, continuous=False, weight=lambda ngram: 1):
     map = {} # n-gram => text id's
     sum = {} # text id => sum of weight(n-gram)
     for i, txt in enumerate(texts):
-        for j, ngram in enumerate(ngrams(txt, n, continuous=continuous)):
+        for j, ngram in enumerate(ngrams(txt, n, **kwargs)):
             if ngram not in map:
                 map[ngram] = set()
             map[ngram].add(i)
@@ -400,17 +411,18 @@ def intertextuality(texts=[], n=5, continuous=False, weight=lambda ngram: 1):
 
 #--- WORD TYPE-TOKEN RATIO -------------------------------------------------------------------------
 
-def type_token_ratio(string):
+def type_token_ratio(string, n=100, punctuation=PUNCTUATION):
     """ Returns the percentage of unique words in the given string as a number between 0.0-1.0,
-        as opposed to the total number of words.
+        as opposed to the total number of words (= lexical diversity, vocabulary richness).
     """
-    u = {}
-    n = 0
-    for w in string.lower().split():
-        w = w.strip(PUNCTUATION)
-        u[w] = True
-        n += 1
-    return float(len(u)) / (n or 1)
+    def window(a, n=100):
+        if n > 0:
+            for i in xrange(max(len(a) - n + 1, 1)):
+                yield a[i:i+n]
+    s = string.lower().split()
+    s = [w.strip(punctuation) for w in s]
+    # Covington & McFall moving average TTR algorithm.
+    return mean(1.0 * len(set(x)) / len(x) for x in window(s, n))
 
 ttr = type_token_ratio
 
@@ -460,18 +472,27 @@ def isplit(string, sep="\t\n\x0b\x0c\r "):
         if a: yield "".join(a); a=[]
     if a: yield "".join(a)
 
-def cooccurrence(iterable, window=(-1,-1), match=lambda x: False, filter=lambda x: True, normalize=lambda x: x):
-    """ Returns the co-occurence matrix of terms in the given iterable
+def cooccurrence(iterable, window=(-1,-1), term1=lambda x: True, term2=lambda x: True, normalize=lambda x: x, matrix=None, update=None):
+    """ Returns the co-occurence matrix of terms in the given iterable, string, file or file list,
         as a dictionary: {term1: {term2: count, term3: count, ...}}.
-        A string can be given as an iterable over the words with: isplit(string).
-        A file can be given as an iterable over the words with: isplit(chain(*open("file.txt"))).
-        The given match() function determines search terms.
-        The given filter() function determines co-occurring terms to count.
-        The given normalize() function can be used to remove punctuation, lowercase words, etc.
-        The given window, a (before, after)-tuple, specifies the size of the co-occurence window.
+        The window specifies the size of the co-occurence window.
+        The term1() function defines anchors.
+        The term2() function defines co-occurring terms to count.
+        The normalize() function can be used to remove punctuation, lowercase words, etc.
+        Optionally, a user-defined matrix to update can be given.
+        Optionally, a user-defined update(matrix, term1, term2, index2) function can be given.
     """
     class Sentinel(object):
         pass
+    if not isinstance(matrix, dict):
+        matrix = {}
+    # Memory-efficient iteration:
+    if isinstance(iterable, basestring):
+        iterable = isplit(iterable)
+    if isinstance(iterable, (list, tuple)) and all(hasattr(f, "read") for f in iterable):
+        iterable = chain(*(isplit(chain(*x)) for x in iterable))
+    if hasattr(iterable, "read"):
+        iterable = isplit(chain(*iterable))
     # Window of terms before and after the search term.
     # Deque is more efficient than list.pop(0).
     q = deque()
@@ -479,7 +500,7 @@ def cooccurrence(iterable, window=(-1,-1), match=lambda x: False, filter=lambda 
     # Note that window=(0,0) will return a dictionary of search term frequency
     # (since it counts co-occurence with itself).
     n = -min(0, window[0]) + max(window[1], 0)
-    m = {}
+    m = matrix
     # Search terms may fall outside the co-occurrence window, e.g., window=(-3,-2).
     # We add sentinel markers at the start and end of the given iterable.
     for x in chain([Sentinel()] * n, iterable, [Sentinel()] * n):
@@ -496,12 +517,14 @@ def cooccurrence(iterable, window=(-1,-1), match=lambda x: False, filter=lambda 
             x1 = q[i]
             if not isinstance(x1, Sentinel):
                 x1 = normalize(x1)
-                if match(x1):
+                if term1(x1):
                     # Iterate the window and filter co-occurent terms.
-                    for x2 in list(q).__getslice__(i+window[0], i+window[1]+1):
+                    for j, x2 in enumerate(list(q).__getslice__(i+window[0], i+window[1]+1)):
                         if not isinstance(x2, Sentinel):
                             x2 = normalize(x2)
-                            if filter(x2):
+                            if term2(x2):
+                                if update:
+                                    update(matrix, x1, x2, j); continue
                                 if x1 not in m:
                                     m[x1] = {}
                                 if x2 not in m[x1]:
@@ -516,95 +539,108 @@ co_occurrence = cooccurrence
 ## Words occuring before and after the word "cat":
 ## {"cat": {"sat": 1, "black": 1, "cat": 1}}
 #s = "The black cat sat on the mat."
-#print co_occurrence(isplit(s), window=(-1,1), 
-#        match = lambda w: w in ("cat",),
+#print cooccurrence(s, window=(-1,1), 
+#       search = lambda w: w in ("cat",),
 #    normalize = lambda w: w.lower().strip(".:;,!?()[]'\""))
 
 ## Adjectives preceding nouns:
 ## {("cat", "NN"): {("black", "JJ"): 1}}
 #s = [("The","DT"), ("black","JJ"), ("cat","NN"), ("sat","VB"), ("on","IN"), ("the","DT"), ("mat","NN")]
-#print co_occurrence(s, window=(-2,-1), 
-#        match = lambda token: token[1].startswith("NN"),
+#print cooccurrence(s, window=(-2,-1), 
+#       search = lambda token: token[1].startswith("NN"),
 #       filter = lambda token: token[1].startswith("JJ"))
+
+# Adjectives preceding nouns:
+# {("cat", "NN"): {("black", "JJ"): 1}}
 
 #### STATISTICS ####################################################################################
 
 #--- MEAN ------------------------------------------------------------------------------------------
 
-def mean(list):
+def mean(iterable):
     """ Returns the arithmetic mean of the given list of values.
         For example: mean([1,2,3,4]) = 10/4 = 2.5.
     """
-    s = 0
-    n = 0
-    for x in list:
-        s += x
-        n += 1
-    return float(s) / (n or 1)
+    a = iterable if isinstance(iterable, list) else list(iterable)
+    return float(sum(a)) / (len(a) or 1)
 
 avg = mean
 
-def median(list):
+def median(iterable, sort=True):
     """ Returns the value that separates the lower half from the higher half of values in the list.
     """
-    s = sorted(list)
-    n = len(list)
+    s = sorted(iterable) if sort is True else list(iterable)
+    n = len(s)
     if n == 0:
         raise ValueError, "median() arg is an empty sequence"
     if n % 2 == 0:
-        return float(s[(n/2)-1] + s[n/2]) / 2
-    return s[n/2]
+        return float(s[(n // 2) - 1] + s[n // 2]) / 2
+    return s[n // 2]
 
-def variance(list, sample=True):
+def variance(iterable, sample=False):
     """ Returns the variance of the given list of values.
         The variance is the average of squared deviations from the mean.
     """
     # Sample variance = E((xi-m)^2) / (n-1)
     # Population variance = E((xi-m)^2) / n
-    m = mean(list)
-    return sum((x-m)**2 for x in list) / (len(list)-int(sample) or 1)
-    
-def standard_deviation(list, *args, **kwargs):
+    a = iterable if isinstance(iterable, list) else list(iterable)
+    m = mean(a)
+    return sum((x - m) ** 2 for x in a) / (len(a) - int(sample) or 1)
+
+def standard_deviation(iterable, *args, **kwargs):
     """ Returns the standard deviation of the given list of values.
         Low standard deviation => values are close to the mean.
         High standard deviation => values are spread out over a large range.
     """
-    return sqrt(variance(list, *args, **kwargs))
+    return sqrt(variance(iterable, *args, **kwargs))
     
 stdev = standard_deviation
 
-def histogram(list, k=10, range=None):
+def simple_moving_average(iterable, k=10):
+    """ Returns an iterator over the simple moving average of the given list of values.
+    """
+    a = iterable if isinstance(iterable, list) else list(iterable)
+    for m in xrange(len(a)):
+        i = m - k
+        j = m + k + 1
+        w = a[max(0,i):j]
+        yield float(sum(w)) / (len(w) or 1)
+      
+sma = simple_moving_average
+
+def histogram(iterable, k=10, range=None):
     """ Returns a dictionary with k items: {(start, stop): [values], ...},
         with equal (start, stop) intervals between min(list) => max(list).
     """
     # To loop through the intervals in sorted order, use:
-    # for (i,j), values in sorted(histogram(list).items()):
-    #     m = i + (j-i)/2 # midpoint
+    # for (i, j), values in sorted(histogram(iterable).items()):
+    #     m = i + (j - i) / 2 # midpoint
     #     print i, j, m, values
-    if range is None:
-        range = (min(list), max(list))
+    a = iterable if isinstance(iterable, list) else list(iterable)
+    r = range or (min(a), max(a))
     k = max(int(k), 1)
-    w = float(range[1] - range[0] + 0.000001) / k # interval (bin width)
+    w = float(r[1] - r[0] + 0.000001) / k # interval (bin width)
     h = [[] for i in xrange(k)]
-    for x in list:
-        i = int(floor((x-range[0]) / w))
+    for x in a:
+        i = int(floor((x - r[0]) / w))
         if 0 <= i < len(h): 
-            #print x, i, "(%.2f, %.2f)" % (range[0]+w*i, range[0]+w+w*i)
+            #print x, i, "(%.2f, %.2f)" % (r[0] + w * i, r[0] + w + w * i)
             h[i].append(x)
-    return dict(((range[0]+w*i, range[0]+w+w*i), v) for i, v in enumerate(h))
+    return dict(((r[0] + w * i, r[0] + w + w * i), v) for i, v in enumerate(h))
 
 #--- MOMENT ----------------------------------------------------------------------------------------
 
-def moment(list, k=1):
-    """ Returns the kth central moment of the given list of values
+def moment(iterable, n=2, sample=False):
+    """ Returns the n-th central moment of the given list of values
         (2nd central moment = variance, 3rd and 4th are used to define skewness and kurtosis).
     """
-    if k == 1:
+    if n == 1:
         return 0.0
-    m = mean(list)
-    return sum([(x-m)**k for x in list]) / (len(list) or 1)
-    
-def skewness(list):
+    a = iterable if isinstance(iterable, list) else list(iterable)
+    m = mean(a)
+    return sum((x - m) ** n for x in a) / (len(a) - int(sample) or 1)
+
+def skewness(iterable, sample=False):
     """ Returns the degree of asymmetry of the given list of values:
         > 0.0 => relatively few values are higher than mean(list),
         < 0.0 => relatively few values are lower than mean(list),
@@ -612,18 +648,20 @@ def skewness(list):
     """
     # Distributions with skew and kurtosis between -1 and +1 
     # can be considered normal by approximation.
-    return moment(list, 3) / (moment(list, 2) ** 1.5 or 1)
+    a = iterable if isinstance(iterable, list) else list(iterable)
+    return moment(a, 3, sample) / (moment(a, 2, sample) ** 1.5 or 1)
 
 skew = skewness
 
-def kurtosis(list):
+def kurtosis(iterable, sample=False):
     """ Returns the degree of peakedness of the given list of values:
         > 0.0 => sharper peak around mean(list) = more infrequent, extreme values,
         < 0.0 => wider peak around mean(list),
         = 0.0 => normal distribution,
         =  -3 => flat
     """
-    return moment(list, 4) / (moment(list, 2) ** 2.0 or 1) - 3
+    a = iterable if isinstance(iterable, list) else list(iterable)
+    return moment(a, 4, sample) / (moment(a, 2, sample) ** 2.0 or 1) - 3
 
 #a = 1
 #b = 1000
@@ -632,7 +670,7 @@ def kurtosis(list):
 
 #--- QUANTILE --------------------------------------------------------------------------------------
 
-def quantile(list, p=0.5, sort=True, a=1, b=-1, c=0, d=1):
+def quantile(iterable, p=0.5, sort=True, a=1, b=-1, c=0, d=1):
     """ Returns the value from the sorted list at point p (0.0-1.0).
         If p falls between two items in the list, the return value is interpolated.
         For example, quantile(list, p=0.5) = median(list)
@@ -640,8 +678,8 @@ def quantile(list, p=0.5, sort=True, a=1, b=-1, c=0, d=1):
     # Based on: Ernesto P. Adorio, http://adorio-research.org/wordpress/?p=125
     # Parameters a, b, c, d refer to the algorithm by Hyndman and Fan (1996):
     # http://stat.ethz.ch/R-manual/R-patched/library/stats/html/quantile.html
-    s = sort is True and sorted(list) or list
-    n = len(list)
+    s = sorted(iterable) if sort is True else list(iterable)
+    n = len(s)
     f, i = modf(a + (b+n) * p - 1)
     if n == 0:
         raise ValueError, "quantile() arg is an empty sequence"
@@ -656,26 +694,28 @@ def quantile(list, p=0.5, sort=True, a=1, b=-1, c=0, d=1):
 
 #print quantile(range(10), p=0.5) == median(range(10))
 
-def boxplot(list, **kwargs):
+def boxplot(iterable, **kwargs):
     """ Returns a tuple (min(list), Q1, Q2, Q3, max(list)) for the given list of values.
         Q1, Q2, Q3 are the quantiles at 0.25, 0.5, 0.75 respectively.
     """
     # http://en.wikipedia.org/wiki/Box_plot
     kwargs.pop("p", None)
     kwargs.pop("sort", None)
-    s = sorted(list)
+    s = sorted(iterable)
     Q1 = quantile(s, p=0.25, sort=False, **kwargs)
     Q2 = quantile(s, p=0.50, sort=False, **kwargs)
     Q3 = quantile(s, p=0.75, sort=False, **kwargs)
     return float(min(s)), Q1, Q2, Q3, float(max(s))
 
+#### STATISTICAL TESTS #############################################################################
+
 #--- FISHER'S EXACT TEST ---------------------------------------------------------------------------
 
 def fisher_exact_test(a, b, c, d, **kwargs):
     """ Fast implementation of Fisher's exact test (two-tailed).
-        Returns the significance for the given 2x2 contingency table:
-        < 0.05: significant
-        < 0.01: very significant
+        Returns the significance p for the given 2 x 2 contingency table:
+        p < 0.05: significant
+        p < 0.01: very significant
         The following test shows a very significant correlation between gender & dieting:
         -----------------------------
         |             | men | women |
@@ -698,7 +738,7 @@ def fisher_exact_test(a, b, c, d, **kwargs):
             k = n - k
         if 0 <= k <= n and (n, k) not in _cache:
             c = 1.0
-            for i in range(1, int(k + 1)):
+            for i in xrange(1, int(k + 1)):
                 c *= n - k + i
                 c /= i
             _cache[(n, k)] = c # 3x speedup.
@@ -708,23 +748,11 @@ def fisher_exact_test(a, b, c, d, **kwargs):
     # Probabilities of "more extreme" data, in both directions (two-tailed).
     # Based on: http://www.koders.com/java/fid868948AD5196B75C4C39FEA15A0D6EAF34920B55.aspx?s=252
     s = [cutoff] + \
-        [p(a+i, b-i, c-i, d+i) for i in range(1, min(b, c) + 1)] + \
-        [p(a-i, b+i, c+i, d-i) for i in range(1, min(a, d) + 1)]
+        [p(a+i, b-i, c-i, d+i) for i in xrange(1, min(b, c) + 1)] + \
+        [p(a-i, b+i, c+i, d-i) for i in xrange(1, min(a, d) + 1)]
     return sum(v for v in s if v <= cutoff) or 0.0
     
-fisher_test = fisher_exact_test
-
-FISHER, CHI2, LLR = "fisher", "chi2", "llr"
-def significance(*args, **kwargs):
-    """ Returns the significance for the given test (FISHER, CHI2, LLR).
-    """
-    test = kwargs.pop("test", FISHER)
-    if test == FISHER:
-        return fisher_exact_test(*args, **kwargs)
-    if test == CHI2:
-        return pearson_chi_squared_test(*args, **kwargs)[1]
-    if test == LLR:
-        return pearson_log_likelihood_ratio(*args, **kwargs)[1]
+fisher = fisher_test = fisher_exact_test
 
 #--- PEARSON'S CHI-SQUARED TEST --------------------------------------------------------------------
 
@@ -735,24 +763,24 @@ def _expected(observed):
     """ Returns the table of (absolute) expected frequencies
         from the given table of observed frequencies.
     """
-    O = observed
-    if len(O) == 0:
+    o = observed
+    if len(o) == 0:
         return []
-    if len(O) == 1:
-        return [[sum(O[0]) / float(len(O[0]))] * len(O[0])]
-    n = [sum(O[i]) for i in range(len(O))]
-    m = [sum(O[i][j] for i in range(len(O))) for j in range(len(O[0]))]
+    if len(o) == 1:
+        return [[sum(o[0]) / float(len(o[0]))] * len(o[0])]
+    n = [sum(o[i]) for i in xrange(len(o))]
+    m = [sum(o[i][j] for i in xrange(len(o))) for j in xrange(len(o[0]))]
     s = float(sum(n))
     # Each cell = row sum * column sum / total.
-    return [[n[i] * m[j] / s for j in range(len(O[i]))] for i in range(len(O))]
+    return [[n[i] * m[j] / s for j in xrange(len(o[i]))] for i in xrange(len(o))]
 
 def pearson_chi_squared_test(observed=[], expected=[], df=None, tail=UPPER):
-    """ Returns (X2, P) for the n x m observed and expected data (containing absolute frequencies).
+    """ Returns (x2, p) for the n x m observed and expected data (containing absolute frequencies).
         If expected is None, an equal distribution over all classes is assumed.
-        If df is None, it is the number of classes-1 (i.e., len(observed[0]) - 1).
-        P < 0.05: significant
-        P < 0.01: very significant
-        This means that if P < 5%, the data is unevenly distributed (e.g., biased).
+        If df is None, it is (n-1) * (m-1).
+        p < 0.05: significant
+        p < 0.01: very significant
+        This means that if p < 5%, the data is unevenly distributed (e.g., biased).
         The following test shows that the die is fair:
         ---------------------------------------
         |       | 1  | 2  | 3  | 4  | 5  | 6  | 
@@ -760,62 +788,108 @@ def pearson_chi_squared_test(observed=[], expected=[], df=None, tail=UPPER):
         ---------------------------------------
         chi2([[22, 21, 22, 27, 22, 36]]) => (6.72, 0.24)
     """
-    # The P-value (upper tail area) is obtained from the incomplete gamma integral:
-    # P(X2 | v) = gammai(v/2, x/2) with v degrees of freedom.
+    # The p-value (upper tail area) is obtained from the incomplete gamma integral:
+    # p(x2 | v) = gammai(v/2, x/2) with v degrees of freedom.
     # See: Cephes, https://github.com/scipy/scipy/blob/master/scipy/special/cephes/chdtr.c
-    O  = observed
-    E  = expected or _expected(observed)
-    df = df or (len(O) > 0 and len(O[0])-1 or 0)
-    X2 = 0.0
-    for i in range(len(O)):
-        for j in range(len(O[i])):
-            if O[i][j] != 0 and E[i][j] != 0:
-                X2 += (O[i][j] - E[i][j]) ** 2.0 / E[i][j]
-    P = gammai(df * 0.5, X2 * 0.5, tail)
-    return (X2, P)
+    o  = list(observed)
+    e  = list(expected) or _expected(o)
+    n  = len(o)
+    m  = len(o[0]) if o else 0
+    df = df or (n-1) * (m-1)
+    df = df or (m == 1 and n-1 or m-1)
+    x2 = 0.0
+    for i in xrange(n):
+        for j in xrange(m):
+            if o[i][j] != 0 and e[i][j] != 0:
+                x2 += (o[i][j] - e[i][j]) ** 2.0 / e[i][j]  
+    p = gammai(df * 0.5, x2 * 0.5, tail)
+    return (x2, p)
     
 chi2 = chi_squared = pearson_chi_squared_test
 
-def chi2p(X2, df=1, tail=UPPER):
-    """ Returns P-value for given X2 and degrees of freedom.
+def chi2p(x2, df=1, tail=UPPER):
+    """ Returns p-value for given x2 and degrees of freedom.
     """
-    return gammai(df * 0.5, X2 * 0.5, tail)
+    return gammai(df * 0.5, x2 * 0.5, tail)
 
-#o, e = [[44,56]], [[50,50]]
+#o, e = [[44, 56]], [[50, 50]]
 #assert round(chi_squared(o, e)[0], 4)  == 1.4400
 #assert round(chi_squared(o, e)[1], 4)  == 0.2301
 
 #--- PEARSON'S LOG LIKELIHOOD RATIO APPROXIMATION --------------------------------------------------
 
 def pearson_log_likelihood_ratio(observed=[], expected=[], df=None, tail=UPPER):
-    """ Returns (G, P) for the n x m observed and expected data (containing absolute frequencies).
+    """ Returns (g, p) for the n x m observed and expected data (containing absolute frequencies).
         If expected is None, an equal distribution over all classes is assumed.
-        If df is None, it is the number of classes-1 (i.e., len(observed[0]) - 1).
-        P < 0.05: significant
-        P < 0.01: very significant
+        If df is None, it is (n-1) * (m-1).
+        p < 0.05: significant
+        p < 0.01: very significant
     """
-    O  = observed
-    E  = expected or _expected(observed)
-    df = df or (len(O) > 0 and len(O[0])-1 or 0)
-    G  = 0.0
-    for i in range(len(O)):
-        for j in range(len(O[i])):
-            if O[i][j] != 0 and E[i][j] != 0:
-                G += O[i][j] * log(O[i][j] / E[i][j])
-    G = G * 2
-    P = gammai(df * 0.5, G * 0.5, tail)
-    return (G, P)
+    o  = list(observed)
+    e  = list(expected) or _expected(o)
+    n  = len(o)
+    m  = len(o[0]) if o else 0
+    df = df or (n-1) * (m-1)
+    df = df or (m == 1 and n-1 or m-1)
+    g  = 0.0
+    for i in xrange(n):
+        for j in xrange(m):
+            if o[i][j] != 0 and e[i][j] != 0:
+                g += o[i][j] * log(o[i][j] / e[i][j])
+    g = g * 2
+    p = gammai(df * 0.5, g * 0.5, tail)
+    return (g, p)
     
 llr = likelihood = pearson_log_likelihood_ratio
 
+#--- KOLMOGOROV-SMIRNOV TWO SAMPLE TEST ------------------------------------------------------------
+# Based on: https://github.com/scipy/scipy/blob/master/scipy/stats/stats.py
+# Thanks to prof. F. De Smedt for additional information.
+
+NORMAL = "normal"
+
+def kolmogorov_smirnov_two_sample_test(a1, a2=NORMAL, n=1000):
+    """ Returns the likelihood that two independent samples are drawn from the same distribution.
+        Returns a (d, p)-tuple with maximum distance d and two-tailed p-value.
+        By default, the second sample is the normal distribution.
+    """
+    if a2 == NORMAL:
+        a2 = norm(max(n, len(a1)), mean(a1), stdev(a1))
+    n1 = float(len(a1))
+    n2 = float(len(a2))
+    a1 = sorted(a1) # [1, 2, 5]
+    a2 = sorted(a2) # [3, 4, 6]
+    a3 = a1 + a2    # [1, 2, 5, 3, 4, 6]
+    # Find the indices in a1 so that, 
+    # if the values in a3 were inserted before these indices,
+    # the order of a1 would be preserved:
+    cdf1 = [bisect_right(a1, v) for v in a3] # [1, 2, 3, 2, 2, 3]
+    cdf2 = [bisect_right(a2, v) for v in a3]
+    # Cumulative distributions.
+    cdf1 = [v / n1 for v in cdf1]
+    cdf2 = [v / n2 for v in cdf2]
+    # Compute maximum deviation between cumulative distributions.
+    d = max(abs(v1 - v2) for v1, v2 in zip(cdf1, cdf2))
+    # Compute p-value.
+    e = sqrt(n1 * n2 / (n1 + n2))
+    p = kolmogorov((e + 0.12 + 0.11 / e) * d)
+    return d, p
+
+ks2 = kolmogorov_smirnov_two_sample_test
+
 #### SPECIAL FUNCTIONS #############################################################################
 
-#--- INCOMPLETE GAMMA FUNCTION ---------------------------------------------------------------------
+#--- GAMMA FUNCTION --------------------------------------------------------------------------------
 # Based on: http://www.johnkerl.org/python/sp_funcs_m.py.txt, Tom Loredo
 # See also: http://www.mhtl.uwaterloo.ca/courses/me755/web_chap1.pdf
 
+def gamma(x):
+    """ Returns the gamma function at x.
+    """
+    return exp(gammaln(x))
+
 def gammaln(x):
-    """ Returns the logarithm of the gamma function.
+    """ Returns the natural logarithm of the gamma function at x.
     """
     x = x - 1.0
     y = x + 5.5
@@ -823,30 +897,35 @@ def gammaln(x):
     n = 1.0
     for i in range(6):
         x += 1
-        n += (76.18009173, -86.50532033, 24.01409822, -1.231739516e0, 0.120858003e-2, -0.536382e-5)[i] / x
+        n += (
+          76.18009173, 
+         -86.50532033, 
+          24.01409822, 
+          -1.231739516e0, 
+           0.120858003e-2, 
+          -0.536382e-5)[i] / x
     return y + log(2.50662827465 * n)
-    
-def gamma(x):
-    return exp(gammaln(x))
+
+lgamma = gammaln
 
 def gammai(a, x, tail=UPPER):
     """ Returns the incomplete gamma function for LOWER or UPPER tail.
     """
     
-    # Series approximation to the incomplete gamma function.
-    def gs(a, x, epsilon=3.e-7, iterations=700):
+    # Series approximation.
+    def _gs(a, x, epsilon=3.e-7, iterations=700):
         ln = gammaln(a)
         s = 1.0 / a
         d = 1.0 / a
-        for i in range(1, iterations):
+        for i in xrange(1, iterations):
             d = d * x / (a + i)
             s = s + d
             if abs(d) < abs(s) * epsilon:
                 return (s * exp(-x + a * log(x) - ln), ln)
         raise StopIteration, (abs(d), abs(s) * epsilon)
     
-    # Continued fraction approximation of the incomplete gamma function.
-    def gf(a, x, epsilon=3.e-7, iterations=200):
+    # Continued fraction approximation.
+    def _gf(a, x, epsilon=3.e-7, iterations=200):
         ln = gammaln(a)
         g0 = 0.0
         a0 = 1.0
@@ -854,7 +933,7 @@ def gammai(a, x, tail=UPPER):
         a1 = x
         b1 = 1.0
         f  = 1.0
-        for i in range(1, iterations):
+        for i in xrange(1, iterations):
             a0 = (a1 + a0 * (i - a)) * f
             b0 = (b1 + b0 * (i - a)) * f
             a1 = x * a0 + a1 * i * f
@@ -873,23 +952,28 @@ def gammai(a, x, tail=UPPER):
         return 1.0
     if x < a + 1:
         if tail == LOWER:
-            return gs(a, x)[0]
-        return 1 - gs(a, x)[0]
+            return _gs(a, x)[0]
+        return 1 - _gs(a, x)[0]
     else:
         if tail == UPPER:
-            return gf(a, x)[0]
-        return 1 - gf(a, x)[0]
+            return _gf(a, x)[0]
+        return 1 - _gf(a, x)[0]
 
-#--- COMPLEMENTARY ERROR FUNCTION ------------------------------------------------------------------
+#--- ERROR FUNCTION --------------------------------------------------------------------------------
 # Based on: http://www.johnkerl.org/python/sp_funcs_m.py.txt, Tom Loredo
 
+def erf(x):
+    """ Returns the error function at x.
+    """
+    return 1.0 - erfc(x)
+
 def erfc(x):
-    """ Complementary error function.
+    """ Returns the complementary error function at x.
     """
     z = abs(x)
-    t = 1 / (1 + 0.5 * z)
-    r = 0
-    for y in [
+    t = 1.0 / (1 + 0.5 * z)
+    r = 0.0
+    for y in (
       0.17087277, 
      -0.82215223, 
       1.48851587, 
@@ -899,27 +983,48 @@ def erfc(x):
       0.09678418, 
       0.37409196, 
       1.00002368, 
-     -1.26551223]:
+     -1.26551223):
         r = y + t * r
-    r = t * exp(-z*z + r)
+    r = t * exp(-z ** 2 + r)
     if x >= 0:
         return r
-    return 2 - r
+    return 2.0 - r
 
-#--- PROBABILITY DISTRIBUTION ----------------------------------------------------------------------
+#--- NORMAL DISTRIBUTION ---------------------------------------------------------------------------
 
-def cdf(x, mu=0, sigma=1):
-    """ Cumulative distribution function.
+def cdf(x, mean=0.0, stdev=1.0):
+    """ Returns the cumulative distribution function at x.
     """
-    return min(1.0, 0.5 * erfc((-x + mu) / (sigma * 2**0.5)))
+    return min(1.0, 0.5 * erfc((-x + mean) / (stdev * 2**0.5)))
 
-def pdf(x, mu=0, sigma=1):
-    """ Probability density function.
+def pdf(x, mean=0.0, stdev=1.0):
+    """ Returns the probability density function at x:
+        the likelihood of x in a distribution with given mean and standard deviation.
     """
-    u = (x - mu) / abs(sigma)
-    return (1 / sqrt(2*pi) * abs(sigma)) * exp(-u*u / 2)
+    u = float(x - mean) / abs(stdev)
+    return (1 / (sqrt(2*pi) * abs(stdev))) * exp(-u*u / 2)
+    
+normpdf = pdf
 
-def tpdf(x, df):
-    """ Probability density function for the Student's t-distribution.
+def norm(n, mean=0.0, stdev=1.0):
+    """ Returns a list of n random samples from the normal distribution.
     """
-    return gamma((df+1) * 0.5) / (sqrt(pi * df) * gamma(df * 0.5) * (1 + x**2.0 / df) ** ((df+1) * 0.5))
+    return [gauss(mean, stdev) for i in xrange(n)]
+
+#--- KOLMOGOROV DISTRIBUTION -----------------------------------------------------------------------
+# Based on: http://www.math.ucla.edu/~tom/distributions/Kolmogorov.html, Thomas Ferguson
+
+def kolmogorov(x):
+    """ Returns the approximation of Kolmogorov's distribution of the two-sample test.
+        For a sample of size m and a sample of size n,
+        it is the probability that the maximum deviation > x / sqrt(m+n).
+    """
+    if x < 0.27:
+        return 1.0
+    if x > 3.2:
+        return 0.0
+    x = -2.0 * x * x
+    k = 0
+    for i in reversed(range(1, 27+1, 2)): # 27 25 23 ... 1
+        k = (1 - k) * exp(x * i)
+    return 2.0 * k

@@ -11,14 +11,14 @@ try:
     PATH = os.path.dirname(os.path.abspath(__file__))
 except:
     PATH = ""
-    
+
 #---------------------------------------------------------------------------------------------------
 
 class TestInflection(unittest.TestCase):
 
     def setUp(self):
         pass
-        
+
     def test_indefinite_article(self):
         # Assert "a" or "an".
         for article, word in (
@@ -36,7 +36,7 @@ class TestInflection(unittest.TestCase):
         self.assertEqual(en.inflect.article("heir", function=en.DEFINITE), "the")
         self.assertEqual(en.inflect.referenced("ewe"), "a ewe")
         print "pattern.en.inflect.article()"
-        
+
     def test_pluralize(self):
         # Assert "octopodes" for classical plural of "octopus".
         # Assert "octopuses" for modern plural.
@@ -51,7 +51,7 @@ class TestInflection(unittest.TestCase):
             n += 1
         self.assertTrue(float(i) / n > 0.95)
         print "pattern.en.inflect.pluralize()"
-        
+
     def test_singularize(self):
         # Assert the accuracy of the singularization algorithm.
         from pattern.db import Datasheet
@@ -69,12 +69,12 @@ class TestInflection(unittest.TestCase):
         # (probably because en.verbs has high percentage irregular verbs).
         i, n = 0, 0
         for v1, v2 in en.inflect.verbs.inflections.items():
-            if en.inflect.verbs.find_lemma(v1) == v2: 
+            if en.inflect.verbs.find_lemma(v1) == v2:
                 i += 1
             n += 1
         self.assertTrue(float(i) / n > 0.90)
         print "pattern.en.inflect.verbs.find_lemma()"
-        
+
     def test_find_lexeme(self):
         # Assert the accuracy of the verb conjugation algorithm.
         i, n = 0, 0
@@ -156,19 +156,19 @@ class TestInflection(unittest.TestCase):
           ("imaginerify", None, "1sg-")):
             self.assertEqual(en.inflect.conjugate(v1, tense), v2)
         print "pattern.en.inflect.conjugate()"
-    
+
     def test_lemma(self):
         # Assert the infinitive of "weren't".
         v = en.inflect.lemma("weren't")
         self.assertEqual(v, "be")
         print "pattern.en.inflect.lemma()"
-    
+
     def test_lexeme(self):
         # Assert all inflections of "be".
         v = en.inflect.lexeme("be")
         self.assertEqual(v, [
-            "be", "am", "are", "is", "being", 
-            "was", "were", "been", 
+            "be", "am", "are", "is", "being",
+            "was", "were", "been",
             "am not", "aren't", "isn't", "wasn't", "weren't"
         ])
         v = en.inflect.lexeme("imaginerify")
@@ -176,7 +176,7 @@ class TestInflection(unittest.TestCase):
             "imaginerify", "imaginerifies", "imaginerifying", "imaginerified"
         ])
         print "pattern.en.inflect.lexeme()"
-        
+
     def test_tenses(self):
         # Assert tense recognition.
         self.assertTrue((en.inflect.PRESENT, 1, en.inflect.SINGULAR) in en.inflect.tenses("am"))
@@ -185,7 +185,7 @@ class TestInflection(unittest.TestCase):
         self.assertTrue("2sg-" in en.inflect.tenses("won't"))
         self.assertTrue("part" in en.inflect.tenses("imaginarifying"))
         print "pattern.en.inflect.tenses()"
-    
+
     def test_comparative(self):
         # Assert "nice" => "nicer".
         self.assertEqual(en.inflect.comparative("nice"), "nicer")
@@ -201,10 +201,10 @@ class TestInflection(unittest.TestCase):
 #---------------------------------------------------------------------------------------------------
 
 class TestQuantification(unittest.TestCase):
-    
+
     def setUp(self):
         pass
-        
+
     def test_extract_leading_zeros(self):
         # Assert "zero zero one" => ("one", 2).
         from pattern.text.en.inflect_quantify import zshift
@@ -213,7 +213,7 @@ class TestQuantification(unittest.TestCase):
         v = zshift("0 0 one")
         self.assertEqual(v, ("one", 2))
         print "pattern.en.quantify._extract_leading_zeros()"
-        
+
     def test_numerals(self):
         # Assert number to numerals.
         for x, s in (
@@ -227,7 +227,7 @@ class TestQuantification(unittest.TestCase):
           (1500101, "one million, five hundred thousand one hundred and one")):
             self.assertEqual(en.numerals(x), s)
         print "pattern.en.numerals()"
-        
+
     def test_number(self):
         # Assert numeric string = actual number (after rounding).
         for i in range(100):
@@ -235,7 +235,7 @@ class TestQuantification(unittest.TestCase):
             y = en.number(en.numerals(x, round=10))
             self.assertAlmostEqual(x, y, places=10)
         print "pattern.en.number()"
-            
+
     def test_quantify(self):
         # Assert quantification algorithm.
         for a, s in (
@@ -249,7 +249,7 @@ class TestQuantification(unittest.TestCase):
           ({"carrot": 4, "parrot": 2}, "several carrots and a pair of parrots")):
             self.assertEqual(en.quantify(a), s)
         print "pattern.en.quantify()"
-    
+
     def test_reflect(self):
         self.assertEqual(en.reflect(""), "a string")
         self.assertEqual(en.reflect(["","",""]), "several strings")
@@ -259,8 +259,20 @@ class TestQuantification(unittest.TestCase):
 #---------------------------------------------------------------------------------------------------
 
 class TestSpelling(unittest.TestCase):
-    
+
     def test_spelling(self):
+        # Assert case-sensitivity + numbers.
+        for a, b in (
+          (   ".", "."   ),
+          (   "?", "?"   ),
+          (   "!", "!"   ),
+          (   "I", "I"   ),
+          (   "a", "a"   ),
+          (  "42", "42"  ),
+          ("3.14", "3.14"),
+          ( "The", "The" ),
+          ( "the", "the" )):
+            self.assertEqual(en.suggest(a)[0][0], b)
         # Assert spelling suggestion accuracy.
         # Note: simply training on more text will not improve accuracy.
         i = j = 0.0
@@ -277,7 +289,7 @@ class TestSpelling(unittest.TestCase):
 #---------------------------------------------------------------------------------------------------
 
 class TestParser(unittest.TestCase):
-    
+
     def setUp(self):
         pass
 
@@ -288,7 +300,7 @@ class TestParser(unittest.TestCase):
         self.assertEqual(v, ["The cat is eating ( e.g. , a fish ) .", "Yum !"])
         print "pattern.en.tokenize()"
 
-    def _test_morphological_rules(self, function=en.lexicon.morphology.apply):
+    def _test_morphological_rules(self, function=en.parser.morphology.apply):
         """ For each word in WordNet that is not in Brill's lexicon,
             test if the given tagger((word, "NN")) yields an improved (word, tag).
             Returns the relative scores for nouns, verbs, adjectives and adverbs.
@@ -308,7 +320,7 @@ class TestParser(unittest.TestCase):
                     n += 1
             scores.append(float(i) / n)
         return scores
-    
+
     def test_default_suffix_rules(self):
         # Assert part-of-speech tag for unknown tokens.
         for a, b in (
@@ -326,16 +338,16 @@ class TestParser(unittest.TestCase):
         self.assertTrue(v[2] > 0.38) # JJ
         self.assertTrue(v[3] > 0.60) # RB
         print "pattern.text._suffix_rules()"
-    
+
     def test_apply_morphological_rules(self):
         # Assert part-of-speech tag for unknown tokens (Brill's lexical rules).
-        v = self._test_morphological_rules(function=en.lexicon.morphology.apply)
+        v = self._test_morphological_rules(function=en.parser.morphology.apply)
         self.assertTrue(v[0] > 0.85) # NN
-        self.assertTrue(v[1] > 0.19) # VB
-        self.assertTrue(v[2] > 0.65) # JJ
-        self.assertTrue(v[3] > 0.59) # RB
-        print "pattern.en.lexicon.morphology.apply()"
-        
+        self.assertTrue(v[1] > 0.15) # VB
+        self.assertTrue(v[2] > 0.63) # JJ
+        self.assertTrue(v[3] > 0.60) # RB
+        print "pattern.en.parser.morphology.apply()"
+
     def test_apply_context_rules(self):
         # Assert part-of-speech tags based on word context.
         for a, b in (                                                                 # Rule:
@@ -348,9 +360,9 @@ class TestParser(unittest.TestCase):
           ([["very", ""], ["much", "JJ"]],      [["very", ""], ["much", "RB"]]),      # LBIGRAM
           ([["such", "JJ"], ["as", "DT"]],      [["such", "JJ"], ["as", "IN"]]),      # WDNEXTWD
           ([["be", "VB"]],                      [["be", "VB"]])):                     # CURWD
-            self.assertEqual(en.lexicon.context.apply(a), b)
-        print "pattern.en.lexicon.context.apply()"
-    
+            self.assertEqual(en.parser.context.apply(a), b)
+        print "pattern.en.parser.context.apply()"
+
     def test_find_tags(self):
         # Assert part-of-speech-tag annotation.
         v = en.parser.find_tags(["black", "cat"])
@@ -358,7 +370,7 @@ class TestParser(unittest.TestCase):
         self.assertEqual(en.parser.find_tags(["felix"])[0][1], "NN")
         self.assertEqual(en.parser.find_tags(["Felix"])[0][1], "NNP")
         print "pattern.en.parser.find_tags()"
-        
+
     def test_find_chunks(self):
         # Assert chunk tag annotation.
         v = en.parser.find_chunks([["black", "JJ"], ["cat", "NN"]])
@@ -378,10 +390,10 @@ class TestParser(unittest.TestCase):
             ["","CD"], ["","NNS"]
         ])
         self.assertEqual(v, [
-            ["", "DT", "B-NP", "O"], ["", "RB", "I-NP", "O"], ["", "JJ", "I-NP", "O"], ["", "NN", "I-NP", "O"], 
-            ["", "MD", "B-VP", "O"], ["", "RB", "I-VP", "O"], ["", "VBZ", "I-VP", "O"], ["", "VBG", "I-VP", "O"], 
-            ["", "RB", "B-ADJP", "O"], ["", "JJ", "I-ADJP", "O"], 
-            ["", "IN", "B-PP", "B-PNP"], 
+            ["", "DT", "B-NP", "O"], ["", "RB", "I-NP", "O"], ["", "JJ", "I-NP", "O"], ["", "NN", "I-NP", "O"],
+            ["", "MD", "B-VP", "O"], ["", "RB", "I-VP", "O"], ["", "VBZ", "I-VP", "O"], ["", "VBG", "I-VP", "O"],
+            ["", "RB", "B-ADJP", "O"], ["", "JJ", "I-ADJP", "O"],
+            ["", "IN", "B-PP", "B-PNP"],
             ["", "CD", "B-NP", "I-PNP"], ["", "NNS", "I-NP", "I-PNP"]])
         # Assert cases for which we have written special rules.
         # - "perhaps you" (ADVP + NP)
@@ -391,32 +403,32 @@ class TestParser(unittest.TestCase):
         v = en.parser.find_chunks([["","RB"], ["","JJ"], ["","PRP"]])
         self.assertEqual(v, [["","RB","B-NP", "O"], ["","JJ","I-NP", "O"], ["","PRP","I-NP", "O"]])
         print "pattern.en.parser.find_chunks()"
-        
+
     def test_find_labels(self):
         # Assert relation tag annotation (SBJ/OBJ).
         v = en.parser.find_labels([
-            ["", "", "NP"], ["", "", "NP"], 
+            ["", "", "NP"], ["", "", "NP"],
             ["", "", "VP"], ["", "", "VP"],
             ["", "", "NP"]])
         self.assertEqual(v, [
-            ["", "", "NP", "NP-SBJ-1"], ["", "", "NP", "NP-SBJ-1"], 
-            ["", "", "VP", "VP-1"], ["", "", "VP", "VP-1"], 
+            ["", "", "NP", "NP-SBJ-1"], ["", "", "NP", "NP-SBJ-1"],
+            ["", "", "VP", "VP-1"], ["", "", "VP", "VP-1"],
             ["", "", "NP", "NP-OBJ-1"]])
         print "pattern.en.parser.find_labels()"
-        
+
     def test_find_prepositions(self):
         # Assert preposition tag annotation (PP + NP).
         v = en.parser.find_prepositions([
             ["", "", "NP"],
             ["", "", "VP"],
             ["", "", "PP"],
-            ["", "", "NP"], 
+            ["", "", "NP"],
             ["", "", "NP"],])
         self.assertEqual(v, [
-            ["", "", "NP", "O"], 
-            ["", "", "VP", "O"], 
-            ["", "", "PP", "B-PNP"], 
-            ["", "", "NP", "I-PNP"], 
+            ["", "", "NP", "O"],
+            ["", "", "VP", "O"],
+            ["", "", "PP", "B-PNP"],
+            ["", "", "NP", "I-PNP"],
             ["", "", "NP", "I-PNP"]])
         # Assert PNP's with consecutive PP's.
         v = en.parse("The cat was looking at me from up on the roof with interest.", prepositions=True)
@@ -429,24 +441,24 @@ class TestParser(unittest.TestCase):
             "././O/O"
         )
         print "pattern.en.parser.find_prepositions()"
-        
+
     def test_find_lemmata(self):
         # Assert lemmata for nouns and verbs.
         v = en.parser.find_lemmata([["cats", "NNS"], ["wearing", "VBG"], ["hats", "NNS"]])
         self.assertEqual(v, [
-            ["cats", "NNS", "cat"], 
-            ["wearing", "VBG", "wear"], 
+            ["cats", "NNS", "cat"],
+            ["wearing", "VBG", "wear"],
             ["hats", "NNS", "hat"]])
         print "pattern.en.parser.find_lemmata()"
-        
+
     def test_named_entity_recognition(self):
         # Assert named entities.
         v = en.parser.parse("Arnold Schwarzenegger is cool.", chunks=False)
-        self.assertEqual(v, 
+        self.assertEqual(v,
             "Arnold/NNP-PERS Schwarzenegger/NNP-PERS is/VBZ cool/JJ ./."
         )
         print "pattern.en.parser.entities.apply()"
-    
+
     def test_parse(self):
         # Assert parsed output with Penn Treebank II tags (slash-formatted).
         # 1) "the black cat" is a noun phrase, "on the mat" is a prepositional noun phrase.
@@ -482,27 +494,28 @@ class TestParser(unittest.TestCase):
         self.assertEqual(en.parse("ø ü.", tokenize=False, tags=False, chunks=False), u"ø ü.")
         # 7) Assert the accuracy of the English tagger.
         i, n = 0, 0
-        for sentence in open(os.path.join(PATH, "corpora", "tagged-en-penntreebank.txt")).readlines():
-            sentence = sentence.decode("utf-8").strip()
-            s1 = [w.split("/") for w in sentence.split(" ")]
-            s2 = [[w for w, pos in s1]]
-            s2 = en.parse(s2, tokenize=False)
-            s2 = [w.split("/") for w in s2.split(" ")]
-            for j in range(len(s1)):
-                if s1[j][1] == s2[j][1].split("-")[0]:
-                    i += 1
-                n += 1
-        #print float(i) / n
-        self.assertTrue(float(i) / n > 0.945)
+        for corpus, a in (("tagged-en-wsj.txt", (0.968, 0.945)), ("tagged-en-oanc.txt", (0.929, 0.932))):
+            for sentence in open(os.path.join(PATH, "corpora", corpus)).readlines():
+                sentence = sentence.decode("utf-8").strip()
+                s1 = [w.split("/") for w in sentence.split(" ")]
+                s2 = [[w for w, pos in s1]]
+                s2 = en.parse(s2, tokenize=False)
+                s2 = [w.split("/") for w in s2.split(" ")]
+                for j in range(len(s1)):
+                    if s1[j][1] == s2[j][1].split("-")[0]:
+                        i += 1
+                    n += 1
+            #print corpus, float(i) / n
+            self.assertTrue(float(i) / n > (en.parser.model and a[0] or a[1]))
         print "pattern.en.parse()"
 
     def test_tagged_string(self):
         # Assert splitable TaggedString with language and tags properties.
         v = en.parser.parse("The black cat sat on the mat.", relations=True, lemmata=True)
         self.assertEqual(v.language, "en")
-        self.assertEqual(v.tags, 
+        self.assertEqual(v.tags,
             ["word", "part-of-speech", "chunk", "preposition", "relation", "lemma"])
-        self.assertEqual(v.split(text.TOKENS)[0][0], 
+        self.assertEqual(v.split(text.TOKENS)[0][0],
             ["The", "DT", "B-NP", "O", "NP-SBJ-1", "the"])
         print "pattern.en.parse().split()"
 
@@ -517,7 +530,7 @@ class TestParser(unittest.TestCase):
         v = en.split(en.parse("The cat purs."))
         self.assertTrue(isinstance(v, en.Text))
         print "pattern.en.split()"
-    
+
     def test_tag(self):
         # Assert [("black", "JJ"), ("cats", "NNS")].
         v = en.tag("black cats")
@@ -525,7 +538,7 @@ class TestParser(unittest.TestCase):
         v = en.tag("")
         self.assertEqual(v, [])
         print "pattern.en.tag()"
-        
+
     def test_ngrams(self):
         # Assert n-grams with and without punctuation marks / sentence marks.
         s = "The cat is napping."
@@ -539,7 +552,7 @@ class TestParser(unittest.TestCase):
         self.assertEqual(v1, [("The", "cat"), ("cat", "purrs"), ("The", "dog"), ("dog", "barks")])
         self.assertEqual(v2, [("The", "cat"), ("cat", "purrs"), ("purrs", "The"), ("The", "dog"), ("dog", "barks")])
         print "pattern.en.ngrams()"
-    
+
     def test_command_line(self):
         # Assert parsed output from the command-line (example from the documentation).
         p = ["python", "-m", "pattern.en", "-s", "Nice cat.", "-OTCRL"]
@@ -553,31 +566,31 @@ class TestParser(unittest.TestCase):
 #---------------------------------------------------------------------------------------------------
 
 class TestParseTree(unittest.TestCase):
-    
+
     def setUp(self):
         # Parse sentences to test on.
         # Creating a Text creates Sentence, Chunk, PNP and Word.
         # Creating a Sentence tests Sentence.append() and Sentence.parse_token().
         self.text = "I'm eating pizza with a fork. What a tasty pizza!"
         self.text = en.Text(en.parse(self.text, relations=True, lemmata=True))
-    
+
     def test_copy(self):
         # Assert deepcopy of Text, Sentence, Chunk, PNP and Word.
         self.text = self.text.copy()
         print "pattern.en.Text.copy()"
-        
+
     def test_xml(self):
         # Assert XML export and import.
         self.text = en.Text.from_xml(self.text.xml)
         print "pattern.en.Text.xml"
         print "pattern.en.Text.from_xml()"
-    
+
     def test_text(self):
         # Assert Text.
         self.assertEqual(self.text.sentences[0].string, "I 'm eating pizza with a fork .")
         self.assertEqual(self.text.sentences[1].string, "What a tasty pizza !")
         print "pattern.en.Text"
-    
+
     def test_sentence(self):
         # Assert Sentence.
         v = self.text[0]
@@ -593,7 +606,7 @@ class TestParseTree(unittest.TestCase):
         self.assertTrue(isinstance(unicode(v), unicode) == True)
         self.assertTrue(isinstance(str(v), str) == True)
         print "pattern.en.Sentence"
-    
+
     def test_sentence_constituents(self):
         # Assert in-order list of Chunk, PNP and Word.
         v = self.text[0].constituents(pnp=True)
@@ -605,7 +618,7 @@ class TestParseTree(unittest.TestCase):
             self.text[0].words[7],
         ])
         print "pattern.en.Sentence.constituents()"
-        
+
     def test_slice(self):
         # Assert sentence slice.
         v = self.text[0].slice(start=4, stop=6)
@@ -615,7 +628,7 @@ class TestParseTree(unittest.TestCase):
         self.assertTrue(v.words[0].type  == "IN")
         self.assertTrue(v.words[1].chunk == None)
         print "pattern.en.Slice"
-    
+
     def test_chunk(self):
         # Assert chunk with multiple words ("a fork").
         v = self.text[0].chunks[4]
@@ -661,7 +674,7 @@ class TestParseTree(unittest.TestCase):
         self.assertTrue(v.chunks == [self.text[0].chunks[3], self.text[0].chunks[4]])
         self.assertTrue(v.pp     ==  self.text[0].chunks[3])
         print "pattern.en.PNP"
-    
+
     def test_word(self):
         # Assert word tags ("fork" => NN).
         v = self.text[0].words[6]
@@ -682,7 +695,7 @@ class TestParseTree(unittest.TestCase):
           [".", ".", "O", "O", "O", "."]]):
             self.assertEqual(self.text[0].words[i].tags, tags)
         print "pattern.en.Word"
-        
+
     def test_word_custom_tags(self):
         # Assert word custom tags ("word/part-of-speech/.../some-custom-tag").
         s = en.Sentence("onion/NN/FOOD", token=[en.WORD, en.POS, "semantic_type"])
@@ -694,51 +707,50 @@ class TestParseTree(unittest.TestCase):
         v.custom_tags["taste"] = "pungent"
         self.assertEqual(s.token, [en.WORD, en.POS, "semantic_type", "taste"])
         print "pattern.en.Word.custom_tags"
-    
+
     def test_find(self):
         # Assert first item for which given function is True.
         v = text.tree.find(lambda x: x>10, [1,2,3,11,12])
         self.assertEqual(v, 11)
         print "pattern.text.tree.find()"
-        
+
     def test_zip(self):
         # Assert list of zipped tuples, using default to balance uneven lists.
         v = text.tree.zip([1,2,3], [4,5,6,7], default=0)
         self.assertEqual(v, [(1,4), (2,5), (3,6), (0,7)])
         print "pattern.text.tree.zip()"
-        
+
     def test_unzip(self):
         v = text.tree.unzip(1, [(1,4), (2,5), (3,6)])
         self.assertEqual(v, [4,5,6])
         print "pattern.text.tree.unzip()"
-    
+
     def test_unique(self):
         # Assert list copy with unique items.
         v = text.tree.unique([1,1,1])
         self.assertEqual(len(v), 1)
         self.assertEqual(v[0], 1)
         print "pattern.text.tree.unique()"
-    
+
     def test_map(self):
         # Assert dynamic Map().
         v = text.tree.Map(lambda x: x+1, [1,2,3])
         self.assertEqual(list(v), [2,3,4])
         self.assertEqual(v.items[0], 1)
         print "pattern.text.tree.Map()"
-        
+
 #---------------------------------------------------------------------------------------------------
 
 class TestModality(unittest.TestCase):
-    
+
     def setUp(self):
         pass
-    
+
     def test_imperative(self):
         # Assert True for sentences that are orders, commands, warnings.
         from pattern.text.en.modality import imperative
         for b, s in (
           (True,  "Do your homework!"),
-          (True,  "Do whatever you want."),
           (True,  "Do not listen to me."),
           (True,  "Turn that off, will you."),
           (True,  "Let's help him."),
@@ -750,7 +762,7 @@ class TestModality(unittest.TestCase):
           (False, "I can help you if you let me.")):
             self.assertEqual(imperative(en.Sentence(en.parse(s))), b)
         print "pattern.en.modality.imperative()"
-        
+
     def test_conditional(self):
         # Assert True for sentences that contain possible or imaginary situations.
         from pattern.text.en.modality import conditional
@@ -784,7 +796,7 @@ class TestModality(unittest.TestCase):
           (False, "I will be late.")):
             self.assertEqual(subjunctive(en.Sentence(en.parse(s))), b)
         print "pattern.en.modality.subjunctive()"
-        
+
     def test_negated(self):
         # Assert True for sentences that contain "not", "n't" or "never".
         for b, s in (
@@ -793,7 +805,7 @@ class TestModality(unittest.TestCase):
           (True,  "Isn't true."),):
             self.assertEqual(en.negated(en.Sentence(en.parse(s))), b)
         print "pattern.en.negated()"
-        
+
     def test_mood(self):
         # Assert imperative mood.
         v = en.mood(en.Sentence(en.parse("Do your homework!")))
@@ -808,7 +820,7 @@ class TestModality(unittest.TestCase):
         v = en.mood(en.Sentence(en.parse("The weather is nice today.")))
         self.assertEqual(v, en.INDICATIVE)
         print "pattern.en.mood()"
-        
+
     def test_modality(self):
         # Assert -1.0 => +1.0 representing the degree of certainty.
         v = en.modality(en.Sentence(en.parse("I wish it would stop raining.")))
@@ -837,7 +849,7 @@ class TestModality(unittest.TestCase):
 #---------------------------------------------------------------------------------------------------
 
 class TestSentiment(unittest.TestCase):
-    
+
     def setUp(self):
         pass
 
@@ -887,7 +899,7 @@ class TestSentiment(unittest.TestCase):
         self.assertTrue(R > 0.636)
         self.assertTrue(F > 0.648)
         print "pattern.en.sentiment()"
-        
+
     def test_sentiment_twitter(self):
         sanders = os.path.join(PATH, "corpora", "polarity-en-sanders.csv")
         if os.path.exists(sanders):
@@ -911,20 +923,20 @@ class TestSentiment(unittest.TestCase):
             self.assertTrue(P > 0.879)
             self.assertTrue(R > 0.911)
             self.assertTrue(F > 0.895)
-        
+
     def test_sentiment_assessment(self):
         # Assert that en.sentiment() has a fine-grained "assessments" property.
         v = en.sentiment("A warm and pleasant day.").assessments
         self.assertTrue(v[1][0][0] == "pleasant")
         self.assertTrue(v[1][1] > 0)
         print "pattern.en.sentiment().assessments"
-        
+
     def test_polarity(self):
         # Assert that en.polarity() yields en.sentiment()[0].
         s = "A great day!"
         self.assertTrue(en.polarity(s) == en.sentiment(s)[0])
         print "pattern.en.polarity()"
-        
+
     def test_subjectivity(self):
         # Assert that en.subjectivity() yields en.sentiment()[1].
         s = "A great day!"
@@ -936,7 +948,7 @@ class TestSentiment(unittest.TestCase):
         s = "A great day!"
         self.assertTrue(en.positive(s))
         print "pattern.en.subjectivity()"
-        
+
     def test_sentiwordnet(self):
         # Assert < 0 for negative words and > 0 for positive words.
         try:
@@ -953,24 +965,24 @@ class TestSentiment(unittest.TestCase):
 #---------------------------------------------------------------------------------------------------
 
 class TestWordNet(unittest.TestCase):
-    
+
     def setUp(self):
         pass
-        
+
     def test_normalize(self):
         # Assert normalization of simple diacritics (WordNet does not store diacritics).
         self.assertEqual(en.wordnet.normalize(u"cliché"), "cliche")
         self.assertEqual(en.wordnet.normalize(u"façade"), "facade")
         print "pattern.en.wordnet.normalize()"
-    
+
     def test_version(self):
         print "WordNet " + en.wordnet.VERSION
-    
+
     def test_synsets(self):
         # Assert synsets by part-of-speech.
         for word, pos in (
              ("cat", en.wordnet.NOUN),
-            ("purr", en.wordnet.VERB),            
+            ("purr", en.wordnet.VERB),
             ("nice", en.wordnet.ADJECTIVE),
           ("nicely", en.wordnet.ADVERB),
              ("cat", "nn"),
@@ -979,11 +991,11 @@ class TestWordNet(unittest.TestCase):
         # Assert TypeError when part-of-speech is not NOUN, VERB, ADJECTIVE or ADVERB.
         self.assertRaises(TypeError, en.wordnet.synsets, "cat", "unknown_pos")
         print "pattern.en.wordnet.synsets()"
-        
+
     def test_synset(self):
         v = en.wordnet.synsets("puma")[0]
         # Assert Synset(id).
-        self.assertEqual(v, en.wordnet.Synset(v.id))        
+        self.assertEqual(v, en.wordnet.Synset(v.id))
         self.assertEqual(v.pos, en.wordnet.NOUN)
         self.assertAlmostEqual(v.ic, 9.7, places=1)
         self.assertTrue("cougar" in v.synonyms) # ["cougar", "puma", "catamount", ...]
@@ -1000,7 +1012,7 @@ class TestWordNet(unittest.TestCase):
         self.assertTrue(s("forest")[0]      in v.holonyms())
         # Assert Lin-similarity.
         self.assertTrue(
-            v.similarity(s("flower")[0]) < 
+            v.similarity(s("flower")[0]) <
             v.similarity(s("teapot")[0]))
         print "pattern.en.wordnet.Synset"
 
@@ -1016,12 +1028,12 @@ class TestWordNet(unittest.TestCase):
         self.assertEqual(en.wordnet.map32(18850, "JJ"), (19556, "JJ"))
         self.assertEqual(en.wordnet.map32(1382437, "VB"), (1370230, "VB"))
         print "pattern.en.wordnet.map32"
-        
+
     def test_sentiwordnet(self):
         # Assert SentiWordNet is loaded correctly.
         if en.wordnet.sentiwordnet is None:
             return
-        try: 
+        try:
             en.wordnet.sentiwordnet.load()
         except ImportError:
             return
@@ -1034,10 +1046,10 @@ class TestWordNet(unittest.TestCase):
 #---------------------------------------------------------------------------------------------------
 
 class TestWordlists(unittest.TestCase):
-    
+
     def setUp(self):
         pass
-        
+
     def test_wordlist(self):
         # Assert lazy loading Wordlist.
         v = en.wordlist.STOPWORDS

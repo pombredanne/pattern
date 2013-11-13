@@ -17,7 +17,7 @@ import codecs
 from xml.etree import cElementTree
 from itertools import chain, imap
 
-try: 
+try:
     MODULE = os.path.dirname(os.path.abspath(__file__))
 except:
     MODULE = ""
@@ -82,7 +82,7 @@ def ngrams(string, n=3, punctuation=PUNCTUATION, continuous=False):
     g = []
     for s in s:
         #s = [None] + s + [None]
-        g.extend([tuple(s[i:i+n]) for i in range(len(s)-n+1)])        
+        g.extend([tuple(s[i:i+n]) for i in range(len(s)-n+1)])
     return g
 
 def pprint(string, token=[WORD, POS, CHUNK, PNP], column=4):
@@ -101,7 +101,7 @@ def pprint(string, token=[WORD, POS, CHUNK, PNP], column=4):
 # This way many instances (e.g., lexicons) can be created without using memory until used.
 
 class lazydict(dict):
-    
+
     def load(self):
         # Must be overridden in a subclass.
         # Must load data with dict.__setitem__(self, k, v) instead of lazydict[k] = v.
@@ -146,7 +146,7 @@ class lazydict(dict):
         return self._lazy("popitem", *args)
 
 class lazylist(list):
-    
+
     def load(self):
         # Must be overridden in a subclass.
         # Must load data with list.append(self, v) instead of lazylist.append(v).
@@ -180,15 +180,17 @@ class lazylist(list):
     def pop(self, *args):
         return self._lazy("pop", *args)
 
-#### LEXICON #######################################################################################
+
+#### PARSER ########################################################################################
+# Pattern's text parsers are based on Brill's algorithm, or optionally on a trained language model.
+# Brill's algorithm automatically acquires a lexicon of known words (aka tag dictionary),
+# and a set of rules for tagging unknown words from a training corpus.
+# Morphological rules are used to tag unknown words based on word suffixes (e.g., -ly = adverb).
+# Contextual rules are used to tag unknown words based on a word's role in the sentence.
+# Named entity rules are used to annotate proper nouns (NNP's: Google = NNP-ORG).
+# When available, the parser will use a faster and more accurate language model (SLP, SVM, NB, ...).
 
 #--- LEXICON ---------------------------------------------------------------------------------------
-# Pattern's text parsers are based on Brill's algorithm.
-# Brill's algorithm automatically acquires a lexicon of known words,
-# and a set of rules for tagging unknown words from a training corpus.
-# Lexical rules are used to tag unknown words, based on the word morphology (prefix, suffix, ...).
-# Contextual rules are used to tag all words, based on the word's role in the sentence.
-# Named entity rules are used to discover proper nouns (NNP's).
 
 def _read(path, encoding="utf-8", comment=";;;"):
     """ Returns an iterator over the lines in the file at the given path,
@@ -197,7 +199,7 @@ def _read(path, encoding="utf-8", comment=";;;"):
     if path:
         if isinstance(path, basestring) and os.path.exists(path):
             # From file path.
-            f = open(path)
+            f = open(path, "rb")
         elif isinstance(path, basestring):
             # From string.
             f = path.splitlines()
@@ -214,64 +216,134 @@ def _read(path, encoding="utf-8", comment=";;;"):
     raise StopIteration
 
 class Lexicon(lazydict):
-    
-    def __init__(self, path="", morphology=None, context=None, entities=None, NNP="NNP", language=None):
-        """ A dictionary of words and their part-of-speech tags.
-            For unknown words, rules for word morphology, context and named entities can be used.
+
+    def __init__(self, path=""):
+        """ A dictionary of known words and their part-of-speech tags.
         """
         self._path = path
-        self._language  = language
-        self.morphology = Morphology(self, path=morphology)
-        self.context    = Context(self, path=context)
-        self.entities   = Entities(self, path=entities, tag=NNP)
-    
-    def load(self):
-        # Arnold NNP x
-        dict.update(self, (x.split(" ")[:2] for x in _read(self._path)))
-    
+
     @property
     def path(self):
         return self._path
-        
+
+    def load(self):
+        # Arnold NNP x
+        dict.update(self, (x.split(" ")[:2] for x in _read(self._path)))
+
+#--- LANGUAGE MODEL --------------------------------------------------------------------------------
+# A language model determines the statistically most probable tag for an unknown word.
+# A pattern.vector Classifier such as SLP can be used to produce a language model,
+# by generalizing patterns from a treebank (i.e., a corpus of hand-tagged texts). 
+# For example:
+# "generalizing/VBG from/IN patterns/NNS" and 
+# "dancing/VBG with/IN squirrels/NNS"
+# both have a pattern -ing/VBG + [?] + NNS => IN.
+# Unknown words preceded by -ing and followed by a plural noun will be tagged IN (preposition),
+# unless (put simply) a majority of other patterns learned by the classifier disagrees.
+
+class Model(object):
+    
+    def __init__(self, path="", classifier=None, known=set(), unknown=set()):
+        """ A language model using a classifier (e.g., SLP, SVM) trained on morphology and context.
+        """
+        try:
+            from pattern.vector import Classifier
+            from pattern.vector import Perceptron
+        except ImportError:
+            sys.path.insert(0, os.path.join(MODULE, ".."))
+            from vector import Classifier
+            from vector import Perceptron
+        self._path  = path
+        # Use a property instead of a subclass, so users can choose their own classifier.
+        self._classifier = Classifier.load(path) if path else classifier or Perceptron()
+        # Parser.lexicon entries can be ambiguous (e.g., about/IN  is RB 25% of the time).
+        # Parser.lexicon entries also in Model.unknown are overruled by the model.
+        # Parser.lexicon entries also in Model.known are not learned by the model
+        # (only their suffix and context is learned, see Model._v() below).
+        self.unknown = unknown | self._classifier._data.get("model_unknown", set())
+        self.known = known
+
     @property
-    def language(self):
-        return self._language
+    def path(self):
+        return self._path
+
+    @classmethod
+    def load(self, lexicon={}, path=""):
+        return Model(lexicon, path)
+
+    def save(self, path, final=True):
+        self._classifier._data["model_unknown"] = self.unknown
+        self._classifier.save(path, final) # final = unlink training data (smaller file).
+
+    def train(self, token, tag, previous=None, next=None):
+        self._classifier.train(self._v(token, previous, next), type=tag)
+
+    def classify(self, token, previous=None, next=None, **kwargs):
+        """ Returns the predicted tag for the given token,
+            in context of the given previous and next (token, tag)-tuples.
+        """
+        return self._classifier.classify(self._v(token, previous, next), **kwargs)
+
+    def apply(self, token, previous=(None, None), next=(None, None)):
+        """ Returns a (token, tag)-tuple for the given token,
+            in context of the given previous and next (token, tag)-tuples.
+        """
+        return [token[0], self._classifier.classify(self._v(token[0], previous, next))]
+
+    def _v(self, token, previous=None, next=None):
+        """ Returns a training vector for the given (word, tag)-tuple and its context.
+        """
+        def f(v, s1, s2):
+            if s2: 
+                v[s1 + " " + s2] = 1
+        p, n = previous, next
+        p = ("", "") if not p else (p[0] or "", p[1] or "")
+        n = ("", "") if not n else (n[0] or "", n[1] or "")
+        v = {}
+        f(v,  "b", "b")         # Bias.
+        f(v,  "h", token[0])    # Capitalization.
+        f(v,  "w", token[-6:] if token not in self.known or token in self.unknown else "")
+        f(v,  "x", token[-3:])  # Word suffix.
+        f(v, "-x", p[0][-3:])   # Word suffix left.
+        f(v, "+x", n[0][-3:])   # Word suffix right.
+        f(v, "-t", p[1])        # Tag left.
+        f(v, "-+", p[1] + n[1]) # Tag left + right.
+        f(v, "+t", n[1])        # Tag right.
+        return v
+        
+    def _get_description(self):
+        return self._classifier.description
+    def _set_description(self, s):
+        self._classifier.description = s
+    
+    description = property(_get_description, _set_description)
 
 #--- MORPHOLOGICAL RULES ---------------------------------------------------------------------------
 # Brill's algorithm generates lexical (i.e., morphological) rules in the following format:
 # NN s fhassuf 1 NNS x => unknown words ending in -s and tagged NN change to NNS.
 #     ly hassuf 2 RB x => unknown words ending in -ly change to RB.
 
-class Rules(object):
-    
-    def __init__(self, lexicon={}, cmd=set()):
-        self.lexicon, self.cmd = lexicon, cmd
-    
-    def apply(self, x):
-        """ Applies the rule to the given token or list of tokens.
-        """
-        return x
+class Morphology(lazylist):
 
-class Morphology(lazylist, Rules):
-    
-    def __init__(self, lexicon={}, path=""):
+    def __init__(self, path="", known={}):
         """ A list of rules based on word morphology (prefix, suffix).
         """
-        cmd = ("char", # Word contains x.
-            "haspref", # Word starts with x.
-             "hassuf", # Word end with x.
-            "addpref", # x + word is in lexicon.
-             "addsuf", # Word + x is in lexicon.
-         "deletepref", # Word without x at the start is in lexicon.
-          "deletesuf", # Word without x at the end is in lexicon.
-           "goodleft", # Word preceded by word x.
-          "goodright", # Word followed by word x.
-        )
-        cmd = set(cmd)
-        cmd.update([("f" + x) for x in cmd])
-        Rules.__init__(self, lexicon, cmd)
+        self.known = known
         self._path = path
-        
+        self._cmd  = set((
+                "word", # Word is x.
+                "char", # Word contains x.
+             "haspref", # Word starts with x.
+              "hassuf", # Word end with x.
+             "addpref", # x + word is in lexicon.
+              "addsuf", # Word + x is in lexicon.
+          "deletepref", # Word without x at the start is in lexicon.
+           "deletesuf", # Word without x at the end is in lexicon.
+            "goodleft", # Word preceded by word x.
+           "goodright", # Word followed by word x.
+        ))
+        self._cmd.update([("f" + x) for x in self._cmd])
+
     @property
     def path(self):
         return self._path
@@ -279,34 +351,34 @@ class Morphology(lazylist, Rules):
     def load(self):
         # ["NN", "s", "fhassuf", "1", "NNS", "x"]
         list.extend(self, (x.split() for x in _read(self._path)))
-
+        
     def apply(self, token, previous=(None, None), next=(None, None)):
-        """ Applies lexical rules to the given token,
-            which is a [word, tag] list.
+        """ Applies lexical rules to the given token, which is a [word, tag] list.
         """
         w = token[0]
         for r in self:
-            if r[1] in self.cmd: # Rule = ly hassuf 2 RB x
+            if r[1] in self._cmd: # Rule = ly hassuf 2 RB x
                 f, x, pos, cmd = bool(0), r[0], r[-2], r[1].lower()
-            if r[2] in self.cmd: # Rule = NN s fhassuf 1 NNS x
+            if r[2] in self._cmd: # Rule = NN s fhassuf 1 NNS x
                 f, x, pos, cmd = bool(1), r[1], r[-2], r[2].lower().lstrip("f")
             if f and token[1] != r[0]:
                 continue
-            if (cmd == "char"       and x in w) \
+            if (cmd == "word"       and x == w) \
+            or (cmd == "char"       and x in w) \
             or (cmd == "haspref"    and w.startswith(x)) \
             or (cmd == "hassuf"     and w.endswith(x)) \
-            or (cmd == "addpref"    and x + w in self.lexicon) \
-            or (cmd == "addsuf"     and w + x in self.lexicon) \
-            or (cmd == "deletepref" and w.startswith(x) and w[len(x):] in self.lexicon) \
-            or (cmd == "deletesuf"  and w.endswith(x) and w[:-len(x)] in self.lexicon) \
+            or (cmd == "addpref"    and x + w in self.known) \
+            or (cmd == "addsuf"     and w + x in self.known) \
+            or (cmd == "deletepref" and w.startswith(x) and w[len(x):] in self.known) \
+            or (cmd == "deletesuf"  and w.endswith(x) and w[:-len(x)] in self.known) \
             or (cmd == "goodleft"   and x == next[0]) \
             or (cmd == "goodright"  and x == previous[0]):
                 token[1] = pos
         return token
-        
+
     def insert(self, i, tag, affix, cmd="hassuf", tagged=None):
-        """ Inserts a new rule that assigns the given tag to words with the given affix 
-            (and tagged as specified), e.g., Morphology.append("RB", "-ly").
+        """ Inserts a new rule that assigns the given tag to words with the given affix,
+            e.g., Morphology.append("RB", "-ly").
         """
         if affix.startswith("-") and affix.endswith("-"):
             affix, cmd = affix[+1:-1], "char"
@@ -319,24 +391,26 @@ class Morphology(lazylist, Rules):
         else:
             r = [affix, cmd.lstrip("f"), tag, "x"]
         lazylist.insert(self, i, r)
-                    
+
     def append(self, *args, **kwargs):
         self.insert(len(self)-1, *args, **kwargs)
-        
+
     def extend(self, rules=[]):
-        for r in rules: 
+        for r in rules:
             self.append(*r)
 
 #--- CONTEXT RULES ---------------------------------------------------------------------------------
 # Brill's algorithm generates contextual rules in the following format:
 # VBD VB PREVTAG TO => unknown word tagged VBD changes to VB if preceded by a word tagged TO.
 
-class Context(lazylist, Rules):
-    
-    def __init__(self, lexicon={}, path=""):
+class Context(lazylist):
+
+    def __init__(self, path=""):
         """ A list of rules based on context (preceding and following words).
         """
-        cmd = ("prevtag", # Preceding word is tagged x.
+        self._path = path
+        self._cmd = set((
+               "prevtag", # Preceding word is tagged x.
                "nexttag", # Following word is tagged x.
               "prev2tag", # Word 2 before is tagged x.
               "next2tag", # Word 2 after is tagged x.
@@ -349,12 +423,12 @@ class Context(lazylist, Rules):
                 "prevwd", # Preceding word is x.
                 "nextwd", # Following word is x.
             "prev1or2wd", # One of 2 preceding words is x.
-            "next1or2wd", # One of 2 following words is x. 
+            "next1or2wd", # One of 2 following words is x.
          "next1or2or3wd", # One of 3 preceding words is x.
-         "prev1or2or3wd", # One of 3 following words is x. 
+         "prev1or2or3wd", # One of 3 following words is x.
              "prevwdtag", # Preceding word is x and tagged y.
              "nextwdtag", # Following word is x and tagged y.
-             "wdprevtag", # Current word is y and preceding word is tagged x. 
+             "wdprevtag", # Current word is y and preceding word is tagged x.
              "wdnexttag", # Current word is x and following word is tagged y.
              "wdand2aft", # Current word is x and word 2 after is y.
           "wdand2tagbfr", # Current word is y and word 2 before is tagged x.
@@ -363,9 +437,7 @@ class Context(lazylist, Rules):
                "rbigram", # Current word is x and word after is y.
             "prevbigram", # Preceding word is tagged x and word before is tagged y.
             "nextbigram", # Following word is tagged x and word after is tagged y.
-        )
-        Rules.__init__(self, lexicon, set(cmd))
-        self._path = path
+        ))
 
     @property
     def path(self):
@@ -385,10 +457,10 @@ class Context(lazylist, Rules):
             for r in self:
                 if token[1] == "STAART":
                     continue
-                if token[1] != r[0] and r[0] != "*": 
+                if token[1] != r[0] and r[0] != "*":
                     continue
                 cmd, x, y = r[2], r[3], r[4] if len(r) > 4 else ""
-                cmd = cmd.lower()                
+                cmd = cmd.lower()
                 if (cmd == "prevtag"        and x ==  t[i-1][1]) \
                 or (cmd == "nexttag"        and x ==  t[i+1][1]) \
                 or (cmd == "prev2tag"       and x ==  t[i-2][1]) \
@@ -418,7 +490,7 @@ class Context(lazylist, Rules):
         return t[len(o):-len(o)]
 
     def insert(self, i, tag1, tag2, cmd="prevtag", x=None, y=None):
-        """ Inserts a new rule that updates words with tag1 to tag2, 
+        """ Inserts a new rule that updates words with tag1 to tag2,
             given constraints x and y, e.g., Context.append("TO < NN", "VB")
         """
         if " < " in tag1 and not x and not y:
@@ -426,12 +498,12 @@ class Context(lazylist, Rules):
         if " > " in tag1 and not x and not y:
             x, tag1 = tag1.split(" > "); cmd="nexttag"
         lazylist.insert(self, i, [tag1, tag2, cmd, x or "", y or ""])
-                    
+
     def append(self, *args, **kwargs):
         self.insert(len(self)-1, *args, **kwargs)
-        
+
     def extend(self, rules=[]):
-        for r in rules: 
+        for r in rules:
             self.append(*r)
 
 #--- NAMED ENTITY RECOGNIZER -----------------------------------------------------------------------
@@ -440,20 +512,19 @@ RE_ENTITY1 = re.compile(r"^http://")                            # http://www.dom
 RE_ENTITY2 = re.compile(r"^www\..*?\.[com|org|net|edu|de|uk]$") # www.domain.com
 RE_ENTITY3 = re.compile(r"^[\w\-\.\+]+@(\w[\w\-]+\.)+[\w\-]+$") # name@domain.com
 
-class Entities(lazydict, Rules):
-    
-    def __init__(self, lexicon={}, path="", tag="NNP"):
+class Entities(lazydict):
+
+    def __init__(self, path="", tag="NNP"):
         """ A dictionary of named entities and their labels.
             For domain names and e-mail adresses, regular expressions are used.
         """
-        cmd = (
+        self.tag   = tag
+        self._path = path
+        self._cmd  = ((
             "pers", # Persons: George/NNP-PERS
              "loc", # Locations: Washington/NNP-LOC
              "org", # Organizations: Google/NNP-ORG
-        )
-        Rules.__init__(self, lexicon, set(cmd))
-        self._path = path
-        self.tag   = tag
+        ))
 
     @property
     def path(self):
@@ -482,26 +553,27 @@ class Entities(lazydict, Rules):
             if w in self:
                 for e in self[w]:
                     # Look ahead to see if successive words match the named entity.
-                    e, tag = (e[:-1], "-"+e[-1].upper()) if e[-1] in self.cmd else (e, "")
+                    e, tag = (e[:-1], "-"+e[-1].upper()) if e[-1] in self._cmd else (e, "")
                     b = True
                     for j, e in enumerate(e):
                         if i + j >= len(tokens) or tokens[i+j][0].lower() != e:
                             b = False; break
                     if b:
                         for token in tokens[i:i+j+1]:
-                            token[1] = (token[1] == "NNPS" and token[1] or self.tag) + tag
+                            token[1] = token[1] if token[1].startswith(self.tag) else self.tag
+                            token[1] += tag
                         i += j
                         break
             i += 1
         return tokens
-        
+
     def append(self, entity, name="pers"):
-        """ Appends a named entity to the lexicon, 
+        """ Appends a named entity to the lexicon,
             e.g., Entities.append("Hooloovoo", "PERS")
         """
         e = map(lambda s: s.lower(), entity.split(" ") + [name])
         self.setdefault(e[0], []).append(e)
-        
+
     def extend(self, entities):
         for entity, name in entities:
             self.append(entity, name)
@@ -543,19 +615,45 @@ class Entities(lazydict, Rules):
 PTB = PENN = "penn"
 
 class Parser(object):
-    
-    def __init__(self, lexicon={}, default=("NN", "NNP", "CD"), language=None):
+
+    def __init__(self, lexicon={}, model=None, morphology=None, context=None, entities=None, default=("NN", "NNP", "CD"), language=None):        
         """ A simple shallow parser using a Brill-based part-of-speech tagger.
             The given lexicon is a dictionary of known words and their part-of-speech tag.
             The given default tags are used for unknown words.
             Unknown words that start with a capital letter are tagged NNP (except for German).
             Unknown words that contain only digits and punctuation are tagged CD.
+            Optionally, morphological and contextual rules (or a language model) can be used 
+            to improve the tags of unknown words.
             The given language can be used to discern between
             Germanic and Romance languages for phrase chunking.
         """
-        self.lexicon  = lexicon
-        self.default  = default
-        self.language = language    
+        self.lexicon    = lexicon or {}
+        self.model      = model
+        self.morphology = morphology
+        self.context    = context
+        self.entities   = entities
+        self.default    = default
+        self.language   = language
+        # Load data.
+        f = lambda s: isinstance(s, basestring) or hasattr(s, "read")
+        if f(lexicon):
+            # Known words.
+            self.lexicon = Lexicon(path=lexicon)
+        if f(morphology):
+            # Unknown word rules based on word suffix.
+            self.morphology = Morphology(path=morphology, known=self.lexicon)
+        if f(context):
+            # Unknown word rules based on word context.
+            self.context = Context(path=context)
+        if f(entities):
+            # Named entities.
+            self.entities = Entities(path=entities, tag=default[1])
+        if f(model):
+            # Word part-of-speech classifier.
+            try: 
+                self.model = Model(path=model)
+            except ImportError: # pattern.vector
+                pass
 
     def find_tokens(self, string, **kwargs):
         """ Returns a list of sentences from the given string.
@@ -567,17 +665,21 @@ class Parser(object):
               abbreviations = kwargs.get("abbreviations", ABBREVIATIONS),
                     replace = kwargs.get(      "replace", replacements),
                   linebreak = r"\n{2,}")
-    
+
     def find_tags(self, tokens, **kwargs):
         """ Annotates the given list of tokens with part-of-speech tags.
             Returns a list of tokens, where each token is now a [word, tag]-list.
         """
         # ["The", "cat", "purs"] => [["The", "DT"], ["cat", "NN"], ["purs", "VB"]]
         return find_tags(tokens,
-                   language = kwargs.get("language", self.language),
-                    lexicon = kwargs.get( "lexicon", self.lexicon),
-                    default = kwargs.get( "default", self.default), 
-                        map = kwargs.get(     "map", None))
+                    lexicon = kwargs.get(   "lexicon", self.lexicon or {}),
+                      model = kwargs.get(     "model", self.model),
+                 morphology = kwargs.get("morphology", self.morphology),
+                    context = kwargs.get(   "context", self.context),
+                   entities = kwargs.get(  "entities", self.entities),
+                   language = kwargs.get(  "language", self.language),
+                    default = kwargs.get(   "default", self.default),
+                        map = kwargs.get(       "map", None))
 
     def find_chunks(self, tokens, **kwargs):
         """ Annotates the given list of tokens with chunk tags.
@@ -586,38 +688,38 @@ class Parser(object):
         # [["The", "DT"], ["cat", "NN"], ["purs", "VB"]] =>
         # [["The", "DT", "B-NP"], ["cat", "NN", "I-NP"], ["purs", "VB", "B-VP"]]
         return find_prepositions(
-               find_chunks(tokens, 
+               find_chunks(tokens,
                    language = kwargs.get("language", self.language)))
-    
+
     def find_prepositions(self, tokens, **kwargs):
         """ Annotates the given list of tokens with prepositional noun phrase tags.
         """
         return find_prepositions(tokens) # See also Parser.find_chunks().
-    
+
     def find_labels(self, tokens, **kwargs):
         """ Annotates the given list of tokens with verb/predicate tags.
         """
         return find_relations(tokens)
-        
+
     def find_lemmata(self, tokens, **kwargs):
         """ Annotates the given list of tokens with word lemmata.
         """
         return [token + [token[0].lower()] for token in tokens]
-        
+
     def parse(self, s, tokenize=True, tags=True, chunks=True, relations=False, lemmata=False, encoding="utf-8", **kwargs):
-        """ Takes a string (sentences) and returns a tagged Unicode string (TaggedString). 
+        """ Takes a string (sentences) and returns a tagged Unicode string (TaggedString).
             Sentences in the output are separated by newlines.
             With tokenize=True, punctuation is split from words and sentences are separated by \n.
             With tags=True, part-of-speech tags are parsed (NN, VB, IN, ...).
             With chunks=True, phrase chunk tags are parsed (NP, VP, PP, PNP, ...).
             With relations=True, semantic role labels are parsed (SBJ, OBJ).
             With lemmata=True, word lemmata are parsed.
-            Optional parameters are passed to 
+            Optional parameters are passed to
             the tokenizer, tagger, chunker, labeler and lemmatizer.
         """
         # Tokenizer.
         if tokenize is True:
-            s = self.find_tokens(s)
+            s = self.find_tokens(s, **kwargs)
         if isinstance(s, (list, tuple)):
             s = [isinstance(s, basestring) and s.split(" ") or s for s in s]
         if isinstance(s, basestring):
@@ -678,7 +780,7 @@ class Parser(object):
 TOKENS = "tokens"
 
 class TaggedString(unicode):
-    
+
     def __new__(self, string, tags=["word"], language=None):
         """ Unicode string with tags and language attributes.
             For example: TaggedString("cat/NN/NP", tags=["word", "pos", "chunk"]).
@@ -694,7 +796,7 @@ class TaggedString(unicode):
         s.tags = list(tags)
         s.language = language
         return s
-    
+
     def split(self, sep=TOKENS):
         """ Returns a list of sentences, where each sentence is a list of tokens,
             where each token is a list of word + tags.
@@ -703,8 +805,8 @@ class TaggedString(unicode):
             return unicode.split(self, sep)
         if len(self) == 0:
             return []
-        return [[[x.replace("&slash;", "/") for x in token.split("/")] 
-            for token in sentence.split(" ")] 
+        return [[[x.replace("&slash;", "/") for x in token.split("/")]
+            for token in sentence.split(" ")]
                 for sentence in unicode.split(self, "\n")]
 
 #--- UNIVERSAL TAGSET ------------------------------------------------------------------------------
@@ -715,7 +817,7 @@ class TaggedString(unicode):
 # A universal tagset is proposed by Slav Petrov (2012):
 # http://www.petrovi.de/data/lrec.pdf
 #
-# Subclasses of Parser should start implementing 
+# Subclasses of Parser should start implementing
 # Parser.parse(tagset=UNIVERSAL) with a simplified tagset.
 # The names of the constants correspond to Petrov's naming scheme, while
 # the value of the constants correspond to Penn Treebank.
@@ -755,7 +857,7 @@ def penntreebank2universal(token, tag):
     if tag in ("SYM", "LS", ".", "!", "?", ",", ":", "(", ")", "\"", "#", "$"):
         return (token, PUNC)
     return (token, X)
-        
+
 #--- TOKENIZER -------------------------------------------------------------------------------------
 
 TOKEN = re.compile(r"(\S+)\s")
@@ -766,10 +868,10 @@ punctuation = ".,;:!?()[]{}`''\"@#$^&*+-|=~_"
 
 # Handle common abbreviations.
 ABBREVIATIONS = abbreviations = set((
-    "a.", "adj.", "adv.", "al.", "a.m.", "c.", "cf.", "comp.", "conf.", "def.", 
-    "ed.", "e.g.", "esp.", "etc.", "ex.", "f.", "fig.", "gen.", "id.", "i.e.", 
-    "int.", "l.", "m.", "Med.", "Mil.", "Mr.", "n.", "n.q.", "orig.", "pl.", 
-    "pred.", "pres.", "p.m.", "ref.", "v.", "vs.", "w/"
+    "a.", "adj.", "adv.", "al.", "a.m.", "art.", "c.", "capt.", "cert.", "cf.", "col.", "Col.", 
+    "comp.", "conf.", "def.", "Dep.", "Dept.", "Dr.", "dr.", "ed.", "e.g.", "esp.", "etc.", "ex.", 
+    "f.", "fig.", "gen.", "id.", "i.e.", "int.", "l.", "m.", "Med.", "Mil.", "Mr.", "n.", "n.q.", 
+    "orig.", "pl.", "pred.", "pres.", "p.m.", "ref.", "v.", "vs.", "w/"
 ))
 
 RE_ABBR1 = re.compile("^[A-Za-z]\.$")       # single letter, "T. De Smedt"
@@ -779,7 +881,7 @@ RE_ABBR3 = re.compile("^[A-Z][" + "|".join( # capital followed by consonants, "M
 
 # Handle emoticons.
 EMOTICONS = { # (facial expression, sentiment)-keys
-    ("love" , +1.00): set(("<3", u"♥")),   
+    ("love" , +1.00): set(("<3", u"♥")),
     ("grin" , +1.00): set((">:D", ":-D", ":D", "=-D", "=D", "X-D", "x-D", "XD", "xD", "8-D")),
     ("taunt", +0.75): set((">:P", ":-P", ":P", ":-p", ":p", ":-b", ":b", ":c)", ":o)", ":^)")),
     ("smile", +0.50): set((">:)", ":-)", ":)", "=)", "=]", ":]", ":}", ":>", ":3", "8)", "8-)")),
@@ -798,12 +900,12 @@ RE_SARCASM = re.compile(r"\( ?\! ?\)")
 
 # Handle common contractions.
 replacements = {
-     "'d": " 'd", 
-     "'m": " 'm", 
+     "'d": " 'd",
+     "'m": " 'm",
      "'s": " 's",
-    "'ll": " 'll", 
-    "'re": " 're", 
-    "'ve": " 've", 
+    "'ll": " 'll",
+    "'re": " 're",
+    "'ve": " 've",
     "n't": " n't"
 }
 
@@ -812,7 +914,7 @@ EOS = "END-OF-SENTENCE"
 
 def find_tokens(string, punctuation=PUNCTUATION, abbreviations=ABBREVIATIONS, replace=replacements, linebreak=r"\n{2,}"):
     """ Returns a list of sentences. Each sentence is a space-separated string of tokens (words).
-        Handles common cases of abbreviations (e.g., etc., ...). 
+        Handles common cases of abbreviations (e.g., etc., ...).
         Punctuation marks are split from other words. Periods (or ?!) mark the end of a sentence.
         Headings without an ending period are inferred by line breaks.
     """
@@ -832,6 +934,7 @@ def find_tokens(string, punctuation=PUNCTUATION, abbreviations=ABBREVIATIONS, re
     string = re.sub(linebreak, " %s " % EOS, string)
     string = re.sub(r"\s+", " ", string)
     tokens = []
+    # Handle punctuation marks.
     for t in TOKEN.findall(string+" "):
         if len(t) > 0:
             tail = []
@@ -860,17 +963,20 @@ def find_tokens(string, punctuation=PUNCTUATION, abbreviations=ABBREVIATIONS, re
             if t != "":
                 tokens.append(t)
             tokens.extend(reversed(tail))
+    # Handle sentence breaks (periods, quotes, parenthesis).
     sentences, i, j = [[]], 0, 0
     while j < len(tokens):
         if tokens[j] in ("...", ".", "!", "?", EOS):
-            # There may be a trailing parenthesis.
             while j < len(tokens) \
-              and tokens[j] in ("...", ".", "!", "?", ")", "'", "\"", u"”", u"’", EOS): 
+              and tokens[j] in ("'", "\"", u"”", u"’", "...", ".", "!", "?", ")", EOS):
+                if tokens[j] in ("'", "\"") and sentences[-1].count(tokens[j]) % 2 == 0:
+                    break # Balanced quotes.
                 j += 1
             sentences[-1].extend(t for t in tokens[i:j] if t != EOS)
             sentences.append([])
             i = j
         j += 1
+    # Handle emoticons.
     sentences[-1].extend(tokens[i:j])
     sentences = (" ".join(s) for s in sentences if len(s) > 0)
     sentences = (RE_SARCASM.sub("(!)", s) for s in sentences)
@@ -883,25 +989,24 @@ def find_tokens(string, punctuation=PUNCTUATION, abbreviations=ABBREVIATIONS, re
 # Unknown words are recognized as numbers if they contain only digits and -,.:/%$
 CD = re.compile(r"^[0-9\-\,\.\:\/\%\$]+$")
 
-def _suffix_rules(token, **kwargs):
+def _suffix_rules(token, tag="NN"):
     """ Default morphological tagging rules for English, based on word suffixes.
     """
-    word, pos = token
-    if word.endswith("ing"):
-        pos = "VBG"
-    if word.endswith("ly"):
-        pos = "RB"
-    if word.endswith("s") and not word.endswith(("is", "ous", "ss")):
-        pos = "NNS"
-    if word.endswith(("able", "al", "ful", "ible", "ient", "ish", "ive", "less", "tic", "ous")) or "-" in word:
-        pos = "JJ"
-    if word.endswith("ed"):
-        pos = "VBN"
-    if word.endswith(("ate", "ify", "ise", "ize")):
-        pos = "VBP"
-    return [word, pos]
+    if token.endswith("ing"):
+        tag = "VBG"
+    if token.endswith("ly"):
+        tag = "RB"
+    if token.endswith("s") and not token.endswith(("is", "ous", "ss")):
+        tag = "NNS"
+    if token.endswith(("able", "al", "ful", "ible", "ient", "ish", "ive", "less", "tic", "ous")) or "-" in token:
+        tag = "JJ"
+    if token.endswith("ed"):
+        tag = "VBN"
+    if token.endswith(("ate", "ify", "ise", "ize")):
+        tag = "VBP"
+    return [token, tag]
 
-def find_tags(tokens, lexicon={}, default=("NN", "NNP", "CD"), language="en", map=None, **kwargs):
+def find_tags(tokens, lexicon={}, model=None, morphology=None, context=None, entities=None, default=("NN", "NNP", "CD"), language="en", map=None, **kwargs):
     """ Returns a list of [token, tag]-items for the given list of tokens:
         ["The", "cat", "purs"] => [["The", "DT"], ["cat", "NN"], ["purs", "VB"]]
         Words are tagged using the given lexicon of (word, tag)-items.
@@ -910,34 +1015,46 @@ def find_tags(tokens, lexicon={}, default=("NN", "NNP", "CD"), language="en", ma
         Unknown words that consist only of digits and punctuation marks are tagged CD.
         Unknown words are then improved with morphological rules.
         All words are improved with contextual rules.
+        If a model is given, uses model for unknown words instead of morphology and context.
         If map is a function, it is applied to each (token, tag) after applying all rules.
     """
     tagged = []
-    if isinstance(lexicon, Lexicon):
-        f = lexicon.morphology.apply
-    elif language == "en":
-        f = _suffix_rules
-    else:
-        f = lambda token, **kwargs: token
+    # Tag known words.
     for i, token in enumerate(tokens):
-        tagged.append([token, lexicon.get(token, i==0 and lexicon.get(token.lower()) or None)])
+        tagged.append([token, lexicon.get(token, i == 0 and lexicon.get(token.lower()) or None)])
+    # Tag unknown words.
     for i, (token, tag) in enumerate(tagged):
-        if tag is None:
-            if len(token) > 0 \
-            and token[0].isupper() \
-            and token[0].isalpha() \
-            and language != "de":
-                tagged[i] = [token, default[1]] # NNP
+        prev, next = (None, None), (None, None)
+        if i > 0:
+            prev = tagged[i-1]
+        if i < len(tagged) - 1:
+            next = tagged[i+1]
+        if tag is None or token in (model is not None and model.unknown or ()):
+            # Use language model (i.e., SLP).
+            if model is not None:
+                tagged[i] = model.apply([token, None], prev, next)
+            # Use NNP for capitalized words (except in German).
+            elif token.istitle() and language != "de":
+                tagged[i] = [token, default[1]]
+            # Use CD for digits and numbers.
             elif CD.match(token) is not None:
-                tagged[i] = [token, default[2]] # CD
+                tagged[i] = [token, default[2]]
+            # Use suffix rules (e.g., -ly = RB).
+            elif morphology is not None:
+                tagged[i] = morphology.apply([token, default[0]], prev, next)
+            # Use suffix rules (English default).
+            elif language == "en":
+                tagged[i] = _suffix_rules(token, default[0])
+            # Use most frequent tag (NN).
             else:
-                tagged[i] = [token, default[0]] # NN
-                tagged[i] = f(tagged[i],
-                    previous = i > 0 and tagged[i-1] or (None, None), 
-                        next = i < len(tagged)-1 and tagged[i+1] or (None, None))
-    if isinstance(lexicon, Lexicon):
-        tagged = lexicon.context.apply(tagged)
-        tagged = lexicon.entities.apply(tagged)
+                tagged[i] = [token, default[0]]
+    # Tag words by context.
+    if context is not None and model is None:
+        tagged = context.apply(tagged)
+    # Tag named entities.
+    if entities is not None:
+        tagged = entities.apply(tagged)
+    # Map tags with a custom function.
     if map is not None:
         tagged = [list(map(token, tag)) or [token, default[0]] for token, tag in tagged]
     return tagged
@@ -954,25 +1071,25 @@ RB = r"(?<!W)RB|RBR|RBS"
 # Chunking rules.
 # CHUNKS[0] = Germanic: RB + JJ precedes NN ("the round table").
 # CHUNKS[1] = Romance: RB + JJ precedes or follows NN ("la table ronde", "une jolie fille").
-CHUNKS = [[ 
+CHUNKS = [[
     # Germanic languages: en, de, nl, ...
     (  "NP", re.compile(r"(("+NN+")/)*((DT|CD|CC|CJ)/)*(("+RB+"|"+JJ+")/)*(("+NN+")/)+")),
-    (  "VP", re.compile(r"(((MD|"+RB+")/)*(("+VB+")/)+)+")),
+    (  "VP", re.compile(r"(((MD|TO|"+RB+")/)*(("+VB+")/)+((RP)/)*)+")),
     (  "VP", re.compile(r"((MD)/)")),
-    (  "PP", re.compile(r"((IN|PP|TO)/)+")),
+    (  "PP", re.compile(r"((IN|PP)/)+")),
     ("ADJP", re.compile(r"((CC|CJ|"+RB+"|"+JJ+")/)*(("+JJ+")/)+")),
     ("ADVP", re.compile(r"(("+RB+"|WRB)/)+")),
-], [ 
+], [
     # Romance languages: es, fr, it, ...
     (  "NP", re.compile(r"(("+NN+")/)*((DT|CD|CC|CJ)/)*(("+RB+"|"+JJ+")/)*(("+NN+")/)+(("+RB+"|"+JJ+")/)*")),
-    (  "VP", re.compile(r"(((MD|"+RB+")/)*(("+VB+")/)+(("+RB+")/)*)+")),
+    (  "VP", re.compile(r"(((MD|TO|"+RB+")/)*(("+VB+")/)+((RP)/)*(("+RB+")/)*)+")),
     (  "VP", re.compile(r"((MD)/)")),
-    (  "PP", re.compile(r"((IN|PP|TO)/)+")),
+    (  "PP", re.compile(r"((IN|PP)/)+")),
     ("ADJP", re.compile(r"((CC|CJ|"+RB+"|"+JJ+")/)*(("+JJ+")/)+")),
     ("ADVP", re.compile(r"(("+RB+"|WRB)/)+")),
 ]]
 
-# Handle ADJP before VP, so that 
+# Handle ADJP before VP, so that
 # RB prefers next ADJP over previous VP.
 CHUNKS[0].insert(1, CHUNKS[0].pop(3))
 CHUNKS[1].insert(1, CHUNKS[1].pop(3))
@@ -980,7 +1097,7 @@ CHUNKS[1].insert(1, CHUNKS[1].pop(3))
 def find_chunks(tagged, language="en"):
     """ The input is a list of [token, tag]-items.
         The output is a list of [token, tag, chunk]-items:
-        The/DT nice/JJ fish/NN is/VBZ dead/JJ ./. => 
+        The/DT nice/JJ fish/NN is/VBZ dead/JJ ./. =>
         The/DT/B-NP nice/JJ/I-NP fish/NN/I-NP is/VBZ/B-VP dead/JJ/B-ADJP ././O
     """
     chunked = [x for x in tagged]
@@ -1073,17 +1190,17 @@ def find_relations(chunked):
         if tag(chunk[-1]) == "VP" and i > 0 and tag(chunks[i-1][-1]) == "NP":
             if chunk[-1][-1] == "O":
                 id += 1
-            for token in chunk: 
+            for token in chunk:
                 token[-1] = "VP-" + str(id)
-            for token in chunks[i-1]: 
+            for token in chunks[i-1]:
                 token[-1] += "*NP-SBJ-" + str(id)
                 token[-1] = token[-1].lstrip("O-*")
         if tag(chunk[-1]) == "VP" and i < len(chunks)-1 and tag(chunks[i+1][-1]) == "NP":
             if chunk[-1][-1] == "O":
                 id += 1
-            for token in chunk: 
+            for token in chunk:
                 token[-1] = "VP-" + str(id)
-            for token in chunks[i+1]: 
+            for token in chunks[i+1]:
                 token[-1] = "*NP-OBJ-" + str(id)
                 token[-1] = token[-1].lstrip("O-*")
     # This is more a proof-of-concept than useful in practice:
@@ -1132,7 +1249,7 @@ def commandline(parse=Parser().parse):
         sys.path.pop(0)
     # Either a text file (-f) or a text string (-s) must be supplied.
     s = o.file and codecs.open(o.file, "r", o.encoding).read() or o.string
-    # The given text can be parsed in two modes: 
+    # The given text can be parsed in two modes:
     # - implicit: parse everything (tokenize, tag/chunk, find relations, lemmatize).
     # - explicit: define what to parse manually.
     if s:
@@ -1213,82 +1330,82 @@ _ = None # prettify the table =>
 # The index is used to describe the format of the verb lexicon file.
 # The aliases can be passed to Verbs.conjugate() and Tenses.__contains__().
 TENSES = {
-   None: (None, _,  _,    _,    _, False, (None   ,)), #       ENGLISH   SPANISH   GERMAN    DUTCH     FRENCH    
-     0 : ( INF, _,  _,    _,    _, False, ("inf"  ,)), #       to be     ser       sein      zijn      être      
-     1 : (PRES, 1, SG,  IND, IPFV, False, ("1sg"  ,)), #     I am        soy       bin       ben       suis      
-     2 : (PRES, 2, SG,  IND, IPFV, False, ("2sg"  ,)), #   you are       eres      bist      bent      es        
-     3 : (PRES, 3, SG,  IND, IPFV, False, ("3sg"  ,)), # (s)he is        es        ist       is        est       
-     4 : (PRES, 1, PL,  IND, IPFV, False, ("1pl"  ,)), #    we are       somos     sind      zijn      sommes    
-     5 : (PRES, 2, PL,  IND, IPFV, False, ("2pl"  ,)), #   you are       sois      seid      zijn      êtes      
-     6 : (PRES, 3, PL,  IND, IPFV, False, ("3pl"  ,)), #  they are       son       sind      zijn      sont      
-     7 : (PRES, _, PL,  IND, IPFV, False, ( "pl"  ,)), #       are                                               
-     8 : (PRES, _,  _,  IND, PROG, False, ("part" ,)), #       being     siendo              zijnd     étant     
-     9 : (PRES, 1, SG,  IND, IPFV, True,  ("1sg-" ,)), #     I am not                                            
-    10 : (PRES, 2, SG,  IND, IPFV, True,  ("2sg-" ,)), #   you aren't                                            
-    11 : (PRES, 3, SG,  IND, IPFV, True,  ("3sg-" ,)), # (s)he isn't                                             
-    12 : (PRES, 1, PL,  IND, IPFV, True,  ("1pl-" ,)), #    we aren't                                            
-    13 : (PRES, 2, PL,  IND, IPFV, True,  ("2pl-" ,)), #   you aren't                                            
-    14 : (PRES, 3, PL,  IND, IPFV, True,  ("3pl-" ,)), #  they aren't                                            
-    15 : (PRES, _, PL,  IND, IPFV, True,  ( "pl-" ,)), #       aren't                                            
-    16 : (PRES, _,  _,  IND, IPFV, True,  (   "-" ,)), #       isn't                                             
-    17 : ( PST, 1, SG,  IND, IPFV, False, ("1sgp" ,)), #     I was       era       war       was       étais     
-    18 : ( PST, 2, SG,  IND, IPFV, False, ("2sgp" ,)), #   you were      eras      warst     was       étais     
-    19 : ( PST, 3, SG,  IND, IPFV, False, ("3sgp" ,)), # (s)he was       era       war       was       était     
-    20 : ( PST, 1, PL,  IND, IPFV, False, ("1ppl" ,)), #    we were      éramos    waren     waren     étions    
-    21 : ( PST, 2, PL,  IND, IPFV, False, ("2ppl" ,)), #   you were      erais     wart      waren     étiez     
-    22 : ( PST, 3, PL,  IND, IPFV, False, ("3ppl" ,)), #  they were      eran      waren     waren     étaient   
-    23 : ( PST, _, PL,  IND, IPFV, False, ( "ppl" ,)), #       were                                              
-    24 : ( PST, _,  _,  IND, PROG, False, ("ppart",)), #       been      sido      gewesen   geweest   été       
-    25 : ( PST, _,  _,  IND, IPFV, False, (   "p" ,)), #       was                                               
-    26 : ( PST, 1, SG,  IND, IPFV, True,  ("1sgp-",)), #     I wasn't                                            
-    27 : ( PST, 2, SG,  IND, IPFV, True,  ("2sgp-",)), #   you weren't                                           
-    28 : ( PST, 3, SG,  IND, IPFV, True,  ("3sgp-",)), # (s)he wasn't                                            
-    29 : ( PST, 1, PL,  IND, IPFV, True,  ("1ppl-",)), #    we weren't                                           
-    30 : ( PST, 2, PL,  IND, IPFV, True,  ("2ppl-",)), #   you weren't                                           
-    31 : ( PST, 3, PL,  IND, IPFV, True,  ("3ppl-",)), #  they weren't                                           
-    32 : ( PST, _, PL,  IND, IPFV, True,  ( "ppl-",)), #       weren't                                           
-    33 : ( PST, _,  _,  IND, IPFV, True,  ( "p-"  ,)), #       wasn't                                            
-    34 : ( PST, 1, SG,  IND,  PFV, False, ("1sg+" ,)), #     I           fui                           fus       
-    35 : ( PST, 2, SG,  IND,  PFV, False, ("2sg+" ,)), #   you           fuiste                        fus       
-    36 : ( PST, 3, SG,  IND,  PFV, False, ("3sg+" ,)), # (s)he           fue                           fut       
-    37 : ( PST, 1, PL,  IND,  PFV, False, ("1pl+" ,)), #    we           fuimos                        fûmes     
-    38 : ( PST, 2, PL,  IND,  PFV, False, ("2pl+" ,)), #   you           fuisteis                      fûtes     
-    39 : ( PST, 3, PL,  IND,  PFV, False, ("3pl+" ,)), #  they           fueron                        furent    
-    40 : ( FUT, 1, SG,  IND, IPFV, False, ("1sgf" ,)), #     I           seré                          serai     
-    41 : ( FUT, 2, SG,  IND, IPFV, False, ("2sgf" ,)), #   you           serás                         seras     
-    42 : ( FUT, 3, SG,  IND, IPFV, False, ("3sgf" ,)), # (s)he           será                          sera      
-    43 : ( FUT, 1, PL,  IND, IPFV, False, ("1plf" ,)), #    we           seremos                       serons    
-    44 : ( FUT, 2, PL,  IND, IPFV, False, ("2plf" ,)), #   you           seréis                        serez     
-    45 : ( FUT, 3, PL,  IND, IPFV, False, ("3plf" ,)), #  they           serán                         seron     
-    46 : (PRES, 1, SG, COND, IPFV, False, ("1sg->",)), #     I           sería                         serais    
-    47 : (PRES, 2, SG, COND, IPFV, False, ("2sg->",)), #   you           serías                        serais    
-    48 : (PRES, 3, SG, COND, IPFV, False, ("3sg->",)), # (s)he           sería                         serait    
-    49 : (PRES, 1, PL, COND, IPFV, False, ("1pl->",)), #    we           seríamos                      serions   
-    50 : (PRES, 2, PL, COND, IPFV, False, ("2pl->",)), #   you           seríais                       seriez    
-    51 : (PRES, 3, PL, COND, IPFV, False, ("3pl->",)), #  they           serían                        seraient  
-    52 : (PRES, 2, SG,  IMP, IPFV, False, ("2sg!" ,)), #   you           sé        sei                 sois      
-    521: (PRES, 3, SG,  IMP, IPFV, False, ("3sg!" ,)), # (s)he                                                   
-    53 : (PRES, 1, PL,  IMP, IPFV, False, ("1pl!" ,)), #    we                     seien               soyons    
-    54 : (PRES, 2, PL,  IMP, IPFV, False, ("2pl!" ,)), #   you           sed       seid                soyez     
-    541: (PRES, 3, PL,  IMP, IPFV, False, ("3pl!" ,)), #   you                                               
-    55 : (PRES, 1, SG,  SJV, IPFV, False, ("1sg?" ,)), #     I           sea       sei                 sois      
-    56 : (PRES, 2, SG,  SJV, IPFV, False, ("2sg?" ,)), #   you           seas      seist               sois      
-    57 : (PRES, 3, SG,  SJV, IPFV, False, ("3sg?" ,)), # (s)he           sea       sei                 soit      
-    58 : (PRES, 1, PL,  SJV, IPFV, False, ("1pl?" ,)), #    we           seamos    seien               soyons    
-    59 : (PRES, 2, PL,  SJV, IPFV, False, ("2pl?" ,)), #   you           seáis     seiet               soyez     
-    60 : (PRES, 3, PL,  SJV, IPFV, False, ("3pl?" ,)), #  they           sean      seien               soient    
-    61 : (PRES, 1, SG,  SJV,  PFV, False, ("1sg?+",)), #     I                                                   
-    62 : (PRES, 2, SG,  SJV,  PFV, False, ("2sg?+",)), #   you                                                   
-    63 : (PRES, 3, SG,  SJV,  PFV, False, ("3sg?+",)), # (s)he                                                   
-    64 : (PRES, 1, PL,  SJV,  PFV, False, ("1pl?+",)), #    we                                                   
-    65 : (PRES, 2, PL,  SJV,  PFV, False, ("2pl?+",)), #   you                                                   
-    66 : (PRES, 3, PL,  SJV,  PFV, False, ("3pl?+",)), #  they                                                   
-    67 : ( PST, 1, SG,  SJV, IPFV, False, ("1sgp?",)), #     I           fuera     wäre                fusse     
-    68 : ( PST, 2, SG,  SJV, IPFV, False, ("2sgp?",)), #   you           fueras    wärest              fusses    
-    69 : ( PST, 3, SG,  SJV, IPFV, False, ("3sgp?",)), # (s)he           fuera     wäre                fût       
-    70 : ( PST, 1, PL,  SJV, IPFV, False, ("1ppl?",)), #    we           fuéramos  wären               fussions  
-    71 : ( PST, 2, PL,  SJV, IPFV, False, ("2ppl?",)), #   you           fuerais   wäret               fussiez   
-    72 : ( PST, 3, PL,  SJV, IPFV, False, ("3ppl?",)), #  they           fueran    wären               fussent   
+   None: (None, _,  _,    _,    _, False, (None   ,)), #       ENGLISH   SPANISH   GERMAN    DUTCH     FRENCH
+     0 : ( INF, _,  _,    _,    _, False, ("inf"  ,)), #       to be     ser       sein      zijn      être
+     1 : (PRES, 1, SG,  IND, IPFV, False, ("1sg"  ,)), #     I am        soy       bin       ben       suis
+     2 : (PRES, 2, SG,  IND, IPFV, False, ("2sg"  ,)), #   you are       eres      bist      bent      es
+     3 : (PRES, 3, SG,  IND, IPFV, False, ("3sg"  ,)), # (s)he is        es        ist       is        est
+     4 : (PRES, 1, PL,  IND, IPFV, False, ("1pl"  ,)), #    we are       somos     sind      zijn      sommes
+     5 : (PRES, 2, PL,  IND, IPFV, False, ("2pl"  ,)), #   you are       sois      seid      zijn      êtes
+     6 : (PRES, 3, PL,  IND, IPFV, False, ("3pl"  ,)), #  they are       son       sind      zijn      sont
+     7 : (PRES, _, PL,  IND, IPFV, False, ( "pl"  ,)), #       are
+     8 : (PRES, _,  _,  IND, PROG, False, ("part" ,)), #       being     siendo              zijnd     étant
+     9 : (PRES, 1, SG,  IND, IPFV, True,  ("1sg-" ,)), #     I am not
+    10 : (PRES, 2, SG,  IND, IPFV, True,  ("2sg-" ,)), #   you aren't
+    11 : (PRES, 3, SG,  IND, IPFV, True,  ("3sg-" ,)), # (s)he isn't
+    12 : (PRES, 1, PL,  IND, IPFV, True,  ("1pl-" ,)), #    we aren't
+    13 : (PRES, 2, PL,  IND, IPFV, True,  ("2pl-" ,)), #   you aren't
+    14 : (PRES, 3, PL,  IND, IPFV, True,  ("3pl-" ,)), #  they aren't
+    15 : (PRES, _, PL,  IND, IPFV, True,  ( "pl-" ,)), #       aren't
+    16 : (PRES, _,  _,  IND, IPFV, True,  (   "-" ,)), #       isn't
+    17 : ( PST, 1, SG,  IND, IPFV, False, ("1sgp" ,)), #     I was       era       war       was       étais
+    18 : ( PST, 2, SG,  IND, IPFV, False, ("2sgp" ,)), #   you were      eras      warst     was       étais
+    19 : ( PST, 3, SG,  IND, IPFV, False, ("3sgp" ,)), # (s)he was       era       war       was       était
+    20 : ( PST, 1, PL,  IND, IPFV, False, ("1ppl" ,)), #    we were      éramos    waren     waren     étions
+    21 : ( PST, 2, PL,  IND, IPFV, False, ("2ppl" ,)), #   you were      erais     wart      waren     étiez
+    22 : ( PST, 3, PL,  IND, IPFV, False, ("3ppl" ,)), #  they were      eran      waren     waren     étaient
+    23 : ( PST, _, PL,  IND, IPFV, False, ( "ppl" ,)), #       were
+    24 : ( PST, _,  _,  IND, PROG, False, ("ppart",)), #       been      sido      gewesen   geweest   été
+    25 : ( PST, _,  _,  IND, IPFV, False, (   "p" ,)), #       was
+    26 : ( PST, 1, SG,  IND, IPFV, True,  ("1sgp-",)), #     I wasn't
+    27 : ( PST, 2, SG,  IND, IPFV, True,  ("2sgp-",)), #   you weren't
+    28 : ( PST, 3, SG,  IND, IPFV, True,  ("3sgp-",)), # (s)he wasn't
+    29 : ( PST, 1, PL,  IND, IPFV, True,  ("1ppl-",)), #    we weren't
+    30 : ( PST, 2, PL,  IND, IPFV, True,  ("2ppl-",)), #   you weren't
+    31 : ( PST, 3, PL,  IND, IPFV, True,  ("3ppl-",)), #  they weren't
+    32 : ( PST, _, PL,  IND, IPFV, True,  ( "ppl-",)), #       weren't
+    33 : ( PST, _,  _,  IND, IPFV, True,  ( "p-"  ,)), #       wasn't
+    34 : ( PST, 1, SG,  IND,  PFV, False, ("1sg+" ,)), #     I           fui                           fus
+    35 : ( PST, 2, SG,  IND,  PFV, False, ("2sg+" ,)), #   you           fuiste                        fus
+    36 : ( PST, 3, SG,  IND,  PFV, False, ("3sg+" ,)), # (s)he           fue                           fut
+    37 : ( PST, 1, PL,  IND,  PFV, False, ("1pl+" ,)), #    we           fuimos                        fûmes
+    38 : ( PST, 2, PL,  IND,  PFV, False, ("2pl+" ,)), #   you           fuisteis                      fûtes
+    39 : ( PST, 3, PL,  IND,  PFV, False, ("3pl+" ,)), #  they           fueron                        furent
+    40 : ( FUT, 1, SG,  IND, IPFV, False, ("1sgf" ,)), #     I           seré                          serai
+    41 : ( FUT, 2, SG,  IND, IPFV, False, ("2sgf" ,)), #   you           serás                         seras
+    42 : ( FUT, 3, SG,  IND, IPFV, False, ("3sgf" ,)), # (s)he           será                          sera
+    43 : ( FUT, 1, PL,  IND, IPFV, False, ("1plf" ,)), #    we           seremos                       serons
+    44 : ( FUT, 2, PL,  IND, IPFV, False, ("2plf" ,)), #   you           seréis                        serez
+    45 : ( FUT, 3, PL,  IND, IPFV, False, ("3plf" ,)), #  they           serán                         seron
+    46 : (PRES, 1, SG, COND, IPFV, False, ("1sg->",)), #     I           sería                         serais
+    47 : (PRES, 2, SG, COND, IPFV, False, ("2sg->",)), #   you           serías                        serais
+    48 : (PRES, 3, SG, COND, IPFV, False, ("3sg->",)), # (s)he           sería                         serait
+    49 : (PRES, 1, PL, COND, IPFV, False, ("1pl->",)), #    we           seríamos                      serions
+    50 : (PRES, 2, PL, COND, IPFV, False, ("2pl->",)), #   you           seríais                       seriez
+    51 : (PRES, 3, PL, COND, IPFV, False, ("3pl->",)), #  they           serían                        seraient
+    52 : (PRES, 2, SG,  IMP, IPFV, False, ("2sg!" ,)), #   you           sé        sei                 sois
+    521: (PRES, 3, SG,  IMP, IPFV, False, ("3sg!" ,)), # (s)he
+    53 : (PRES, 1, PL,  IMP, IPFV, False, ("1pl!" ,)), #    we                     seien               soyons
+    54 : (PRES, 2, PL,  IMP, IPFV, False, ("2pl!" ,)), #   you           sed       seid                soyez
+    541: (PRES, 3, PL,  IMP, IPFV, False, ("3pl!" ,)), #   you
+    55 : (PRES, 1, SG,  SJV, IPFV, False, ("1sg?" ,)), #     I           sea       sei                 sois
+    56 : (PRES, 2, SG,  SJV, IPFV, False, ("2sg?" ,)), #   you           seas      seist               sois
+    57 : (PRES, 3, SG,  SJV, IPFV, False, ("3sg?" ,)), # (s)he           sea       sei                 soit
+    58 : (PRES, 1, PL,  SJV, IPFV, False, ("1pl?" ,)), #    we           seamos    seien               soyons
+    59 : (PRES, 2, PL,  SJV, IPFV, False, ("2pl?" ,)), #   you           seáis     seiet               soyez
+    60 : (PRES, 3, PL,  SJV, IPFV, False, ("3pl?" ,)), #  they           sean      seien               soient
+    61 : (PRES, 1, SG,  SJV,  PFV, False, ("1sg?+",)), #     I
+    62 : (PRES, 2, SG,  SJV,  PFV, False, ("2sg?+",)), #   you
+    63 : (PRES, 3, SG,  SJV,  PFV, False, ("3sg?+",)), # (s)he
+    64 : (PRES, 1, PL,  SJV,  PFV, False, ("1pl?+",)), #    we
+    65 : (PRES, 2, PL,  SJV,  PFV, False, ("2pl?+",)), #   you
+    66 : (PRES, 3, PL,  SJV,  PFV, False, ("3pl?+",)), #  they
+    67 : ( PST, 1, SG,  SJV, IPFV, False, ("1sgp?",)), #     I           fuera     wäre                fusse
+    68 : ( PST, 2, SG,  SJV, IPFV, False, ("2sgp?",)), #   you           fueras    wärest              fusses
+    69 : ( PST, 3, SG,  SJV, IPFV, False, ("3sgp?",)), # (s)he           fuera     wäre                fût
+    70 : ( PST, 1, PL,  SJV, IPFV, False, ("1ppl?",)), #    we           fuéramos  wären               fussions
+    71 : ( PST, 2, PL,  SJV, IPFV, False, ("2ppl?",)), #   you           fuerais   wäret               fussiez
+    72 : ( PST, 3, PL,  SJV, IPFV, False, ("3ppl?",)), #  they           fueran    wären               fussent
 }
 
 # Map tenses and aliases to unique index.
@@ -1368,9 +1485,9 @@ def tense_id(*args, **kwargs):
     # In Spanish, the conditional is regarded as an indicative tense.
     if tense == CONDITIONAL and mood == INDICATIVE:
         tense, mood = PRESENT, CONDITIONAL
-    # Disambiguate aliases: "pl" => 
+    # Disambiguate aliases: "pl" =>
     # (PRESENT, None, PLURAL, INDICATIVE, IMPERFECTIVE, False).
-    return TENSES_ID.get(tense.lower(), 
+    return TENSES_ID.get(tense.lower(),
            TENSES_ID.get((tense, person, number, mood, aspect, negated)))
 
 tense = tense_id
@@ -1382,7 +1499,7 @@ tense = tense_id
 # These must be implemented in a subclass with rules for unknown verbs.
 
 class Verbs(lazydict):
-    
+
     def __init__(self, path="", format=[], default={}, language=None):
         """ A dictionary of verb infinitives, each linked to a list of conjugated forms.
             Each line in the file at the given path is one verb, with the tenses separated by a comma.
@@ -1394,20 +1511,20 @@ class Verbs(lazydict):
         self._format   = dict((TENSES_ID[id], i) for i, id in enumerate(format))
         self._default  = default
         self._inverse  = {}
-        
+
     def load(self):
         # have,,,has,,having,,,,,had,had,haven't,,,hasn't,,,,,,,hadn't,hadn't
         id = self._format[TENSES_ID[INFINITIVE]]
         for v in _read(self._path):
             v = v.split(",")
             dict.__setitem__(self, v[id], v)
-            for x in (x for x in v if x): 
+            for x in (x for x in v if x):
                 self._inverse[x] = v[id]
 
     @property
     def path(self):
         return self._path
-        
+
     @property
     def language(self):
         return self._language
@@ -1419,7 +1536,7 @@ class Verbs(lazydict):
         if dict.__len__(self) == 0:
             self.load()
         return self
-        
+
     @property
     def inflections(self):
         """ Yields a dictionary of (inflected, infinitive)-items.
@@ -1427,7 +1544,7 @@ class Verbs(lazydict):
         if dict.__len__(self) == 0:
             self.load()
         return self._inverse
-        
+
     @property
     def TENSES(self):
         """ Yields a list of tenses for this language, excluding negations.
@@ -1520,19 +1637,19 @@ class Verbs(lazydict):
         a = (TENSES[id][:-2] for id in a)
         a = Tenses(sorted(a))
         return a
-    
+
     def find_lemma(self, verb):
         # Must be overridden in a subclass.
         # Must return the infinitive for the given conjugated (unknown) verb.
         return verb
-    
+
     def find_lexeme(self, verb):
         # Must be overridden in a subclass.
         # Must return the list of conjugations for the given (unknown) verb.
         return []
 
 class Tenses(list):
-    
+
     def __contains__(self, tense):
         # t in tenses(verb) also works when t is an alias (e.g. "1sg").
         return list.__contains__(self, TENSES[tense_id(tense)][:-2])
@@ -1552,7 +1669,7 @@ class Tenses(list):
 # Sentiment()(txt) returns an averaged (polarity, subjectivity)-tuple.
 # Sentiment().assessments(txt) returns a list of (chunk, polarity, subjectivity, label)-tuples.
 
-# Semantic labels are useful for fine-grained analysis, e.g., 
+# Semantic labels are useful for fine-grained analysis, e.g.,
 # negative words + positive emoticons could indicate cynicism.
 
 # Semantic labels:
@@ -1568,7 +1685,7 @@ def avg(list):
     return sum(list) / float(len(list) or 1)
 
 class Score(tuple):
-    
+
     def __new__(self, polarity, subjectivity, assessments=[]):
         """ A (polarity, subjectivity)-tuple with an assessments property.
         """
@@ -1578,11 +1695,11 @@ class Score(tuple):
         self.assessments = assessments
 
 class Sentiment(lazydict):
-    
+
     def __init__(self, path="", language=None, synset=None, confidence=None, **kwargs):
         """ A dictionary of words (adjectives) and polarity scores (positive/negative).
             The value for each word is a dictionary of part-of-speech tags.
-            The value for each word POS-tag is a tuple with values for 
+            The value for each word POS-tag is a tuple with values for
             polarity (-1.0-1.0), subjectivity (0.0-1.0) and intensity (0.5-2.0).
         """
         self._path       = path   # XML file path.
@@ -1595,11 +1712,11 @@ class Sentiment(lazydict):
         self.negations   = kwargs.get("negations", ("no", "not", "n't", "never"))
         self.modifiers   = kwargs.get("modifiers", ("RB",))
         self.modifier    = kwargs.get("modifier" , lambda w: w.endswith("ly"))
-    
+
     @property
     def path(self):
         return self._path
-    
+
     @property
     def language(self):
         return self._language
@@ -1607,7 +1724,7 @@ class Sentiment(lazydict):
     @property
     def confidence(self):
         return self._confidence
-    
+
     def load(self, path=None):
         """ Loads the XML-file (with sentiment annotations) from the given path.
             By default, Sentiment.path is lazily loaded.
@@ -1646,7 +1763,7 @@ class Sentiment(lazydict):
             words[w] = dict((pos, map(avg, zip(*psi))) for pos, psi in words[w].items())
         # Average scores of all part-of-speech tags.
         for w, pos in words.items():
-            words[w][None] = map(avg, zip(*pos.values()))        
+            words[w][None] = map(avg, zip(*pos.values()))
         # Average scores of all synonyms per synset.
         for id, psi in synsets.items():
             synsets[id] = map(avg, zip(*psi))
@@ -1671,10 +1788,10 @@ class Sentiment(lazydict):
                 id = "r-" + id
         if dict.__len__(self) == 0:
             self.load()
-        return tuple(self._synsets.get(id, (0.0, 0.0))[:2])       
-    
+        return tuple(self._synsets.get(id, (0.0, 0.0))[:2])
+
     def __call__(self, s, negation=True, **kwargs):
-        """ Returns a (polarity, subjectivity)-tuple for the given sentence, 
+        """ Returns a (polarity, subjectivity)-tuple for the given sentence,
             with polarity between -1.0 and 1.0 and subjectivity between 0.0 and 1.0.
             The sentence can be a string, Synset, Text, Sentence, Chunk, Word, Document, Vector.
             An optional weight parameter can be given,
@@ -1726,13 +1843,15 @@ class Sentiment(lazydict):
         else:
             a = []
         weight = kwargs.get("weight", lambda w: 1)
-        return Score(polarity = avg(map(lambda (w, p, s, x): (w, p), a), weight),
-                 subjectivity = avg(map(lambda (w, p, s, x): (w, s), a), weight),
-                  assessments = a)
+        polarity = avg(map(lambda (w, p, s, x): (w, p), a), weight)
+        polarity = -1 < polarity < 1 and polarity or round(polarity, 1) 
+        subjectivity = avg(map(lambda (w, p, s, x): (w, s), a), weight)
+        subjectivity = 0 < subjectivity < 1 and subjectivity or round(subjectivity, 1) 
+        return Score(polarity, subjectivity, assessments = a)
 
     def assessments(self, words=[], negation=True):
         """ Returns a list of (chunk, polarity, subjectivity, label)-tuples for the given list of words:
-            where chunk is a list of successive words: a known word optionally 
+            where chunk is a list of successive words: a known word optionally
             preceded by a modifier ("very good") or a negation ("not good").
         """
         a = []
@@ -1805,7 +1924,7 @@ class Sentiment(lazydict):
             # "not good" = slightly bad, "not bad" = slightly good.
             a[i] = (w, p * -0.5 if n < 0 else p, s, x)
         return a
-        
+
     def annotate(self, word, pos=None, polarity=0.0, subjectivity=0.0, intensity=1.0, label=None):
         """ Annotates the given word with polarity, subjectivity and intensity scores,
             and optionally a semantic label (e.g., MOOD for emoticons, IRONY for "(!)").
@@ -1819,21 +1938,21 @@ class Sentiment(lazydict):
 # Based on: Peter Norvig, "How to Write a Spelling Corrector", http://norvig.com/spell-correct.html
 
 class Spelling(lazydict):
-    
+
     ALPHA = "abcdefghijklmnopqrstuvwxyz"
-    
+
     def __init__(self, path=""):
         self._path = path
-    
+
     def load(self):
         for x in _read(self._path):
             x = x.split()
             dict.__setitem__(self, x[0], int(x[1]))
-    
+
     @property
     def path(self):
         return self._path
-        
+
     @property
     def language(self):
         return self._language
@@ -1851,7 +1970,7 @@ class Spelling(lazydict):
         f = open(path, "w")
         f.write(model)
         f.close()
-        
+
     def _edit1(self, w):
         """ Returns a set of words with edit distance 1 from the given word.
         """
@@ -1865,7 +1984,7 @@ class Spelling(lazydict):
             [a + c + b[0:] for a, b in split for c in Spelling.ALPHA]
         )
         return set(delete + transpose + replace + insert)
-        
+
     def _edit2(self, w):
         """ Returns a set of words with edit distance 2 from the given word
         """
@@ -1884,21 +2003,27 @@ class Spelling(lazydict):
         """
         if len(self) == 0:
             self.load()
+        if len(w) == 1:
+            return [(w, 1.0)] # I
+        if w in PUNCTUATION:
+            return [(w, 1.0)] # .?!
+        if w.replace(".", "").isdigit():
+            return [(w, 1.0)] # 1.5
         candidates = self._known([w]) \
                   or self._known(self._edit1(w)) \
                   or self._known(self._edit2(w)) \
                   or [w]
-        candidates = [(self.get(w, 0.0), w) for w in candidates]
+        candidates = [(self.get(c, 0.0), c) for c in candidates]
         s = float(sum(p for p, w in candidates) or 1)
         candidates = sorted(((p / s, w) for p, w in candidates), reverse=True)
-        candidates = [(w, p) for p, w in candidates]
+        candidates = [(w.istitle() and x.title() or x, p) for p, x in candidates] # case-sensitive
         return candidates
 
 #### MULTILINGUAL ##################################################################################
 # The default functions in each language submodule, with an optional language parameter:
 # from pattern.text import parse
 # print parse("The cat sat on the mat.", language="en")
-# print parse("De kat zat op de mat.", language="nl") 
+# print parse("De kat zat op de mat.", language="nl")
 
 LANGUAGES = ["en", "es", "de", "fr", "it", "nl"]
 
@@ -1916,22 +2041,22 @@ def tokenize(*args, **kwargs):
 
 def parse(*args, **kwargs):
     return _multilingual("parse", *args, **kwargs)
-        
+
 def parsetree(*args, **kwargs):
     return _multilingual("parsetree", *args, **kwargs)
 
 def split(*args, **kwargs):
     return _multilingual("split", *args, **kwargs)
-    
+
 def tag(*args, **kwargs):
     return _multilingual("tag", *args, **kwargs)
-    
+
 def sentiment(*args, **kwargs):
     return _multilingual("sentiment", *args, **kwargs)
 
 def singularize(*args, **kwargs):
     return _multilingual("singularize", *args, **kwargs)
-    
+
 def pluralize(*args, **kwargs):
     return _multilingual("pluralize", *args, **kwargs)
 
@@ -1940,6 +2065,6 @@ def conjugate(*args, **kwargs):
 
 def predicative(*args, **kwargs):
     return _multilingual("predicative", *args, **kwargs)
-    
+
 def suggest(*args, **kwargs):
     return _multilingual("suggest", *args, **kwargs)
