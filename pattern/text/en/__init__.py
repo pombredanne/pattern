@@ -160,20 +160,20 @@ def parsetree(s, *args, **kwargs):
     """
     return Text(parse(s, *args, **kwargs))
 
-def split(s, token=[WORD, POS, CHUNK, PNP]):
+def tree(s, token=[WORD, POS, CHUNK, PNP, REL, LEMMA]):
     """ Returns a parsed Text from the given parsed string.
     """
     return Text(s, token)
 
-def tag(s, tokenize=True, encoding="utf-8"):
+def tag(s, tokenize=True, encoding="utf-8", **kwargs):
     """ Returns a list of (token, tag)-tuples from the given string.
     """
     tags = []
-    for sentence in parse(s, tokenize, True, False, False, False, encoding).split():
+    for sentence in parse(s, tokenize, True, False, False, False, encoding, **kwargs).split():
         for token in sentence:
             tags.append((token[0], token[1]))
     return tags
-
+    
 def suggest(w):
     """ Returns a list of (word, confidence)-tuples of spelling corrections.
     """
@@ -193,6 +193,8 @@ def positive(s, threshold=0.1, **kwargs):
     """ Returns True if the given sentence has a positive sentiment (polarity >= threshold).
     """
     return polarity(s, **kwargs) >= threshold
+    
+split = tree # Backwards compatibility.
 
 #---------------------------------------------------------------------------------------------------
 # python -m pattern.en xml -s "The cat sat on the mat." -OTCL

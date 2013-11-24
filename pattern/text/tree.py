@@ -31,7 +31,7 @@
 # The Text and Sentece classes are containers: 
 # no parsing functionality should be added to it.
 
-from itertools import izip
+from itertools import izip, chain
 
 try:
     from config import SLASH
@@ -466,7 +466,7 @@ class Chunk(object):
     # repr(Chunk) is a Python string (with Unicode characters encoded).
     @property
     def string(self):
-        return u" ".join([word.string for word in self.words])
+        return u" ".join(word.string for word in self.words)
     def __unicode__(self):
         return self.string
     def __repr__(self):
@@ -690,12 +690,9 @@ class Sentence(object):
         self._do_chunk(chunk, role, relation, iob)  # Append Chunk, or add last word to last chunk.
         self._do_conjunction()
         self._do_relation()
-        if anchor is not None or pnp is not None:
-            self._do_pnp(pnp, anchor)
-        if anchor is not None:
-            self._do_anchor(anchor)
-        if custom is not None:
-            self._do_custom(custom)
+        self._do_pnp(pnp, anchor)
+        self._do_anchor(anchor)
+        self._do_custom(custom)
 
     def parse_token(self, token, tags=[WORD, POS, CHUNK, PNP, REL, ANCHOR, LEMMA]):
         """ Returns the arguments for Sentence.append() from a tagged token representation.
@@ -1013,7 +1010,7 @@ class Sentence(object):
     # repr(Sentence) is a Python strings (with Unicode characters encoded).
     @property
     def string(self):
-        return u" ".join([word.string for word in self])
+        return u" ".join(word.string for word in self)
     def __unicode__(self):
         return self.string
     def __repr__(self):
@@ -1099,22 +1096,29 @@ class Text(list):
         if _is_tokenstring(string):
             token, language = string.tags, getattr(string, "language", language)
         if string:
-            for s in string.split("\n"):
-                self.append(Sentence(s, token, language))
+            # From a string.
+            if isinstance(string, basestring):
+                string = string.splitlines()
+            # From an iterable (e.g., string.splitlines(), open('parsed.txt')).
+            self.extend(Sentence(s, token, language) for s in string)
     
     def insert(self, index, sentence):
         list.insert(self, index, sentence)
-        self[-1].text = self
+        sentence.text = self
+        
     def append(self, sentence):
         list.append(self, sentence)
-        self[-1].text = self
+        sentence.text = self
+        
     def extend(self, sentences):
+        list.extend(self, sentences)
         for s in sentences:
-            self.append(s)
+            s.text = self
             
     def remove(self, sentence):
         list.remove(self, sentence)
         sentence.text = None
+        
     def pop(self, index):
         sentence = list.pop(self, index)
         sentence.text = None
@@ -1123,6 +1127,10 @@ class Text(list):
     @property
     def sentences(self):
         return list(self)
+        
+    @property
+    def words(self):
+        return list(chain(*self))
         
     def copy(self):
         t = Text("", encoding=self.encoding)
@@ -1133,9 +1141,11 @@ class Text(list):
     # Text.string and unicode(Text) are Unicode strings.
     @property
     def string(self):
-        return u"\n".join([unicode(sentence) for sentence in self])
+        return u"\n".join(sentence.string for sentence in self)
+        
     def __unicode__(self):
         return self.string
+        
     #def __repr__(self):
     #    return "\n".join([repr(sentence) for sentence in self])
 
@@ -1161,11 +1171,13 @@ class Text(list):
 
 Tree = Text
 
-def split(string, token=[WORD, POS, CHUNK, PNP, REL, ANCHOR, LEMMA]):
+def tree(string, token=[WORD, POS, CHUNK, PNP, REL, ANCHOR, LEMMA]):
     """ Transforms the output of parse() into a Text object.
         The token parameter lists the order of tags in each token in the input string.
     """
     return Text(string, token)
+    
+split = tree # Backwards compatibility.
 
 def xml(string, token=[WORD, POS, CHUNK, PNP, REL, ANCHOR, LEMMA]):
     """ Transforms the output of parse() into XML.

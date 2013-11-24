@@ -59,7 +59,7 @@ def encode_string(v, encoding="utf-8"):
 decode_utf8 = decode_string
 encode_utf8 = encode_string
 
-PUNCTUATION = ".,;:!?()[]{}`''\"@#$^&*+-|=~_"
+PUNCTUATION = ".,;:!?()[]{}`'\"@#$^&*+-|=~_"
 
 def ngrams(string, n=3, punctuation=PUNCTUATION, continuous=False):
     """ Returns a list of n-grams (tuples of n successive words) from the given string.
@@ -180,7 +180,6 @@ class lazylist(list):
     def pop(self, *args):
         return self._lazy("pop", *args)
 
-
 #### PARSER ########################################################################################
 # Pattern's text parsers are based on Brill's algorithm, or optionally on a trained language model.
 # Brill's algorithm automatically acquires a lexicon of known words (aka tag dictionary),
@@ -209,7 +208,7 @@ def _read(path, encoding="utf-8", comment=";;;"):
         for i, line in enumerate(f):
             line = line.strip(codecs.BOM_UTF8) if i == 0 and isinstance(line, str) else line
             line = line.strip()
-            line = decode_utf8(line)
+            line = decode_utf8(line, encoding)
             if not line or (comment and line.startswith(comment)):
                 continue
             yield line
@@ -1843,11 +1842,9 @@ class Sentiment(lazydict):
         else:
             a = []
         weight = kwargs.get("weight", lambda w: 1)
-        polarity = avg(map(lambda (w, p, s, x): (w, p), a), weight)
-        polarity = -1 < polarity < 1 and polarity or round(polarity, 1) 
-        subjectivity = avg(map(lambda (w, p, s, x): (w, s), a), weight)
-        subjectivity = 0 < subjectivity < 1 and subjectivity or round(subjectivity, 1) 
-        return Score(polarity, subjectivity, assessments = a)
+        return Score(polarity = avg(map(lambda (w, p, s, x): (w, p), a), weight),
+                 subjectivity = avg(map(lambda (w, p, s, x): (w, s), a), weight),
+                  assessments = a)
 
     def assessments(self, words=[], negation=True):
         """ Returns a list of (chunk, polarity, subjectivity, label)-tuples for the given list of words:
