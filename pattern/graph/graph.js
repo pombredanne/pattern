@@ -1,4 +1,4 @@
-/*### PATTERN | JAVASCRIPT:GRAPH ###################################################################*/
+/*### PATTERN | GRAPH.JS ###########################################################################*/
 // Copyright (c) 2010 University of Antwerp, Belgium
 // Authors: Tom De Smedt <tom@organisms.be>, Daniel Friesen (daniel@nadir-seen-fire.com)
 // License: BSD (see LICENSE.txt for details).
@@ -69,6 +69,8 @@ Array.unique = function(array) {
     }
     return a;
 };
+
+var choice = Array.choice;
 
 /*--- MATH -----------------------------------------------------------------------------------------*/
 
@@ -317,6 +319,7 @@ var Node = Class.extend({
         this.strokewidth = a.strokewidth;
         this.weight      = a.weight || 0;
         this.centrality  = a.centrality || 0;
+        this.degree      = a.degree || 0;
         this.text = null;
         if (a.text != false) {
             var div = document.createElement('div');
@@ -384,7 +387,7 @@ var Node = Class.extend({
         // Draw the node weight as a shadow (based on node betweenness centrality).
         if (weighted && weighted != false && this.centrality > ((weighted==true)?-1:weighted)) {
             var w = this.centrality * 35;
-           _ctx_graph_fillStyle("rgba(0,0,0,0.1)", ctx);
+           _ctx_graph_fillStyle("rgba(0,0,0,0.075)", ctx);
             ctx.beginPath();
             ctx.arc(this.x, this.y, this.radius+w, 0, Math.PI*2, true);
             ctx.closePath();
@@ -739,6 +742,20 @@ var Graph = Class.extend({
         return r;
     },
 
+    degreeCentrality: function(graph) {
+        /* Calculates degree centrality and returns a node => weight dictionary.
+         * Node.degree is updated in the process.
+         * Node.degree is higher for nodes with a lot of local traffic.
+         */
+        var r = {};
+        for (var i=0; i < this.nodes.length; i++) {
+            var n = this.nodes[i];
+            n.degree = n.links.length / this.nodes.length;
+            r[n] = n.degree;
+        }
+        return r;
+    },
+
     sorted: function(order, threshold) {
         /* Returns a list of nodes sorted by WEIGHT or CENTRALITY.
          * Nodes with a lot of traffic will be at the start of the list.
@@ -852,13 +869,13 @@ var Graph = Class.extend({
         }        
     },
 
-//  loop: function({frames:500, weighted:false, directed:false, fps:10, ipf:2})
+//  loop: function({frames:500, weighted:false, directed:false, fps:30, ipf:2})
     loop: function(a) {
         /* Calls Graph.update() and Graph.draw() in an animation loop.
          */
         if (a === undefined) a = {};
         if (a.frames === undefined) a.frames = 500;
-        if (a.fps    === undefined) a.fps    = 20;
+        if (a.fps    === undefined) a.fps    = 30;
         if (a.ipf    === undefined) a.ipf    = 2;
         this._i = 0;
         this._frames = a.frames;
@@ -1023,6 +1040,8 @@ GraphLayout = Class.extend({
     
 });
 
+/*--- GRAPH LAYOUT: FORCE-BASED --------------------------------------------------------------------*/
+
 GraphSpringLayout = GraphLayout.extend({
     
     init: function(graph) {
@@ -1120,7 +1139,7 @@ GraphSpringLayout = GraphLayout.extend({
     }
 });
 
-/*--- GRAPH TRAVERSAL ------------------------------------------------------------------------------*/
+/*--- GRAPH SEARCH ---------------------------------------------------------------------------------*/
 
 //    depthFirstSearch(node, {visit:function(node){return false;}, traversable:function(node,edge){return true;}, _visited:null}
 Graph.depthFirstSearch = function(node, a) {
@@ -1221,7 +1240,7 @@ function edges(path) {
     return [];
 };
 
-/*--- GRAPH THEORY ---------------------------------------------------------------------------------*/
+/*--- GRAPH ADJACENCY ------------------------------------------------------------------------------*/
 
 var Heap = Class.extend({
     init: function() {
@@ -1354,6 +1373,8 @@ Graph.dijkstraShortestPaths = function(graph, id, a) {
     return P;
 };
 
+/*--- GRAPH CENTRALITY -----------------------------------------------------------------------------*/
+
 //    brandesBetweennessCentrality(graph {normalized:true, directed:false})
 Graph.brandesBetweennessCentrality = function(graph, a) {
     /* Betweenness centrality for nodes in the graph.
@@ -1469,6 +1490,8 @@ Graph.eigenvectorCentrality = function(graph, a) {
     return x;
 };
 
+/*--- GRAPH PARTITIONING ---------------------------------------------------------------------------*/
+
 // a | b => all elements from a and all the elements from b. 
 // a & b => elements that appear in a as well as in b.
 // a - b => elements that appear in a but not in b.
@@ -1524,8 +1547,6 @@ Graph.partition = function(graph) {
     return g;
 };
 
-/*--- GRAPH THEORY | CLIQUE ------------------------------------------------------------------------*/
-
 Graph.isClique = function(graph) {
     /* A clique is a set of nodes in which each node is connected to all other nodes.
      */
@@ -1572,7 +1593,7 @@ Graph.cliques = function(graph, threshold) {
     }
 };
 
-/*--- GRAPH MAINTENANCE ----------------------------------------------------------------------------*/
+/*--- GRAPH UTLITY FUNCTIONS -----------------------------------------------------------------------*/
 
 Graph.unlink = function(graph, node1, node2) {
     /* Removes the edges between node1 and node2.

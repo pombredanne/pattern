@@ -28,22 +28,27 @@ import re
 import glob
 import heapq
 import codecs
+import tempfile
 import cPickle
 import gzip
 import types
 
-from math        import log, exp, sqrt
+from math        import log, exp, sqrt, tanh
 from time        import time
-from random      import random, randint, choice, sample
-from itertools   import izip, chain
+from random      import random, randint, uniform, choice, sample, seed
+from itertools   import chain
 from bisect      import insort
 from operator    import itemgetter
 from StringIO    import StringIO
 from codecs      import open
 from collections import defaultdict
 
+if sys.version > "3":
+    long = int
+    xrange = range
+
 try:
-    MODULE = os.path.dirname(os.path.abspath(__file__))
+    MODULE = os.path.dirname(os.path.realpath(__file__))
 except:
     MODULE = ""
 
@@ -105,19 +110,46 @@ def shi(i, base="0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
 #--- LIST FUNCTIONS --------------------------------------------------------------------------------
 
-def shuffled(list):
-    """ Yields a copy of the given list with the items in random order.
+def shuffled(iterable, **kwargs):
+    """ Returns a copy of the given list with the items in random order.
     """
-    return sorted(list, key=lambda x: random())
+    seed(kwargs.get("seed"))
+    return sorted(list(iterable), key=lambda x: random())
 
-def chunk(list, n):
-    """ Yields n successive equal-sized chunks from the given list.
+def chunk(iterable, n):
+    """ Returns an iterator of n successive equal-sized chunks from the given list.
     """
+    # list(chunk([1, 2, 3, 4], n=2)) => [[1, 2], [3, 4]]
+    a = list(iterable)
+    n = int(n)
     i = 0
+    j = 0
     for m in xrange(n):
-        j = i + len(list[m::n]) 
-        yield list[i:j]
+        j = i + len(a[m::n]) 
+        yield a[i:j]
         i = j
+        
+def mix(iterables=[], n=10):
+    """ Returns an iterator that alternates the given lists, in n chunks.
+    """
+    # list(mix([[1, 2, 3, 4], ["a", "b"]], n=2)) => [1, 2, "a", 3, 4, "b"]
+    a = [list(chunk(x, n)) for x in iterables]
+    for i in xrange(int(n)):
+        for x in a:
+            for item in x[i]:
+                yield item
+        
+def bin(iterable, key=lambda x: x, value=lambda x: x):
+    """ Returns a dictionary with items in the given list grouped by the given key.
+    """
+    # bin([["a", 1], ["a", 2], ["b", 3]], key=lambda x: x[0]) => 
+    # {"a": [["a", 1], ["a", 2]], 
+    #  "b": [["b", 3]]
+    # }
+    m = defaultdict(list)
+    for x in iterable:
+        m[key(x)].append(value(x))
+    return m
 
 def pimap(iterable, function, *args, **kwargs):
     """ Returns an iterator of function(x, *args, **kwargs) for the iterable (x1, x2, x3, ...).
@@ -279,27 +311,28 @@ def count(words=[], top=None, threshold=0, stemmer=None, exclude=[], stopwords=F
         if count[k] <= threshold:
             dict.__delitem__(count, k)
     if top is not None:
-        count = count.__class__(heapq.nsmallest(top, count.iteritems(), key=lambda (k,v): (-v,k)))
+        count = count.__class__(heapq.nsmallest(top, count.items(), key=lambda kv: (-kv[1], kv[0])))
     return count
 
 def character_ngrams(string="", n=3, top=None, threshold=0, exclude=[], **kwargs):
-    """ Returns a dictionary of (character n-gram, count)-items, in lowercase.
+    """ Returns a dictionary of (character n-gram, count)-items.
         N-grams in the exclude list are not counted.
         N-grams whose count falls below (or equals) the given threshold are excluded.
         N-grams that are not in the given top most counted are excluded.
     """
     # An optional dict-parameter can be used to specify a subclass of dict, 
     # e.g., count(words, dict=readonlydict) as used in Document.
-    count = kwargs.get("dict", dict)()
-    for w in re.findall(r"(?=(" + "."*n + "))", string.lower()):
-        if w not in exclude:
-            dict.__setitem__(count, w, (w in count) and count[w]+1 or 1)
-    for k in count.keys():
-        if count[k] <= threshold:
-            dict.__delitem__(count, k)
+    count = defaultdict(int)
+    if n > 0:
+        for i in xrange(len(string)-n+1):
+            w = string[i:i+n]
+            if w not in exclude:
+                count[w] += 1
+    if threshold > 0:
+        count = dict((k, v) for k, v in count.items() if v > threshold)
     if top is not None:
-        count = count.__class__(heapq.nsmallest(top, count.iteritems(), key=lambda (k,v): (-v,k)))
-    return count
+        count = dict(heapq.nsmallest(top, count.items(), key=lambda kv: (-kv[1], kv[0])))
+    return kwargs.get("dict", dict)(count)
     
 chngrams = character_ngrams
 
@@ -361,6 +394,11 @@ class Document(object):
             w = string
             w = count(w, **kwargs)
             v = None
+        # A set of unique words: map to ready-only dict of (word, 1)-items.
+        elif isinstance(string, set):
+            w = string
+            w = kwargs["dict"].fromkeys(w, 1)
+            v = None
         # A Vector of (word, weight)-items: copy as document vector.
         elif isinstance(string, Vector):
             w = string
@@ -392,7 +430,7 @@ class Document(object):
             w = kwargs["dict"](w)
             v = None
         else:
-            raise TypeError, "document string is not str, unicode, list, dict, Vector, Sentence or Text."
+            raise TypeError("document string is not str, unicode, list, dict, Vector, Sentence or Text.")
         self._id          = _uid()             # Document ID, used when comparing objects.
         self._name        = kwargs.get("name") # Name that describes the document content.
         self._type        = kwargs.get("type", # Type that describes the category or class of the document.
@@ -565,7 +603,7 @@ class Document(object):
     tf_idf = tfidf = term_frequency_inverse_document_frequency
     
     def information_gain(self, word):
-        """ Returns the information gain for the given word.
+        """ Returns the information gain for the given word (0.0-1.0).
         """
         if self.model is not None:
             return self.model.ig(word)
@@ -573,11 +611,20 @@ class Document(object):
         
     ig = infogain = information_gain
     
+    def gain_ratio(self, word):
+        """ Returns the information gain ratio for the given word (0.0-1.0).
+        """
+        if self.model is not None:
+            return self.model.gr(word)
+        return 0.0
+        
+    gr = gainratio = gain_ratio
+    
     @property
     def vector(self):
         """ Yields the document vector, a dictionary of (word, relevance)-items from the document.
             The relevance is tf, tf * idf, infogain or binary if the document is part of a Model, 
-            based on the value of Model.weight (TF, TFIDF, IG, BINARY, None).
+            based on the value of Model.weight (TF, TFIDF, IG, GR, BINARY, None).
             The document vector is used to calculate similarity between two documents,
             for example in a clustering or classification algorithm.
         """
@@ -585,7 +632,7 @@ class Document(object):
             # See the Vector class below = a dict with extra functionality (copy, norm).
             # When a document is added/deleted from a model, the cached vector is deleted.
             w = getattr(self.model, "weight", TF)
-            if w not in (TF, TFIDF, IG, BINARY):
+            if w not in (TF, TFIDF, IG, INFOGAIN, GR, GAINRATIO, BINARY):
                 f = lambda w: float(self._terms[w]); w=None
             if w == BINARY:
                 f = lambda w: int(self._terms[w] > 0)
@@ -593,8 +640,10 @@ class Document(object):
                 f = self.tf
             if w == TFIDF:
                 f = self.tf_idf
-            if w == IG:
+            if w in (IG, INFOGAIN):
                 f = self.model.ig
+            if w in (GR, GAINRATIO):
+                f = self.model.gr
             self._vector = Vector(((w, f(w)) for w in self.terms), weight=w)
         return self._vector
         
@@ -608,8 +657,8 @@ class Document(object):
         """ Returns a sorted list of (relevance, word)-tuples that are top keywords in the document.
             With normalized=True, weights are normalized between 0.0 and 1.0 (their sum will be 1.0).
         """
-        n = normalized and sum(self.vector.itervalues()) or 1.0
-        v = ((f/n, w) for w, f in self.vector.iteritems())
+        n = normalized and sum(self.vector.values()) or 1.0
+        v = ((f/n, w) for w, f in self.vector.items())
         v = heapq.nsmallest(top, v, key=lambda v: (-v[0], v[1]))
         return v
     
@@ -672,7 +721,7 @@ class Vector(readonlydict):
                 w = args[0].weight
             # From a dict.
             if isinstance(args[0], dict):
-                f = args[0].iteritems()
+                f = args[0].items()
             # From an iterator.
             elif hasattr(args[0], "__iter__"):
                 f = iter(args[0])
@@ -681,7 +730,7 @@ class Vector(readonlydict):
         self.weight = kwargs.pop("weight", w) # TF, TFIDF, IG, BINARY or None.
         self._norm  = None                    # Cached L2-norm.
         # Exclude zero weights (sparse=True).
-        f = chain(f, kwargs.iteritems())
+        f = chain(f, kwargs.items())
         f = ((k, v) for k, v in f if not s or v != 0)
         readonlydict.__init__(self, f)
 
@@ -700,7 +749,7 @@ class Vector(readonlydict):
             The matrix norm is used to normalize (0.0-1.0) cosine similarity between documents.
         """
         if self._norm is None: 
-            self._norm = sum(w * w for w in self.itervalues()) ** 0.5
+            self._norm = sum(w * w for w in self.values()) ** 0.5
         return self._norm
         
     norm = l2 = L2 = L2norm = l2norm = L2_norm = l2_norm
@@ -716,7 +765,7 @@ class Vector(readonlydict):
             vector = vector.vector
         v = self.copy()
         s = dict.__setitem__
-        for f, w in vector.iteritems():
+        for f, w in vector.items():
             if f in v:
                 s(v, f, w)
         return v
@@ -739,7 +788,7 @@ _features = features
 def sparse(v):
     """ Returns the vector with features that have weight 0 removed.
     """
-    for f, w in list(v.iteritems()):
+    for f, w in list(v.items()):
         if w == 0:
             del v[f]
     return v
@@ -747,7 +796,7 @@ def sparse(v):
 def relative(v):
     """ Returns the vector with feature weights normalized so that their sum is 1.0 (in-place).
     """
-    n = float(sum(v.itervalues())) or 1.0
+    n = float(sum(v.values())) or 1.0
     s = dict.__setitem__
     for f in v: # Modified in-place.
         s(v, f, v[f] / n)
@@ -760,14 +809,14 @@ def l2_norm(v):
     """
     if isinstance(v, Vector):
         return v.l2_norm
-    return sum(w * w for w in v.itervalues()) ** 0.5
+    return sum(w * w for w in v.values()) ** 0.5
     
 norm = l2 = L2 = L2norm = l2norm = L2_norm = l2_norm
 
 def cosine_similarity(v1, v2):
     """ Returns the cosine similarity of the given vectors.
     """
-    s = sum(v1.get(f, 0) * w for f, w in v2.iteritems())
+    s = sum(v1.get(f, 0) * w for f, w in v2.items())
     s = float(s) / (l2_norm(v1) * l2_norm(v2) or 1)
     return s
     
@@ -814,12 +863,17 @@ def distance(v1, v2, method=COSINE):
 
 _distance  = distance
 
-def entropy(p=[]):
-    """ Returns the Shannon entropy for the given list of probabilities.
+def entropy(p=[], base=None):
+    """ Returns the Shannon entropy for the given list of probabilities
+        as a value between 0.0-1.0, where higher values indicate uncertainty.
     """
-    s = float(sum(p)) or 1
-    n = max(len(p), 2)
-    return -sum(x / s * log(x / s, n) for x in p if x != 0) or 0.0
+    # entropy([1.0]) => 0.0, one possible outcome with a 100% chance
+    # entropy([0.5, 0.5]) => 1.0, two outcomes with a 50% chance each (random).
+    p = list(p)
+    s = float(sum(p)) or 1.0
+    s = s if len(p) > 1 else max(s, 1.0)
+    b = base or max(len(p), 2)
+    return -sum(x / s * log(x / s, b) for x in p if x != 0) or 0.0
 
 #### MODEL #########################################################################################
 
@@ -836,7 +890,8 @@ ORANGE, WEKA = "orange", "weka"
 NORM, L1, L2, TOP300 = "norm", "L1", "L2", "top300"
 
 # Feature selection methods:
-IG = INFOGAIN = "infogain"
+INFOGAIN, GAINRATIO, CHISQUARE, CHISQUARED = "infogain", "gainratio", "chisquare", "chisquared"
+IG, GR, X2, DF = "ig", "gr", "x2", "df"
 
 # Clustering methods:
 KMEANS, HIERARCHICAL = "k-means", "hierarchical"
@@ -852,10 +907,14 @@ class Model(object):
         """
         self.description = ""             # Description of the dataset: author e-mail, etc.
         self._documents  = readonlylist() # List of documents (read-only).
-        self._index      = {}             # Document.name => Document
+        self._index      = {}             # Document.name => Document.
         self._df         = {}             # Cache of document frequency per word.
         self._cos        = {}             # Cache of ((d1.id, d2.id), relevance)-items (cosine similarity).
+        self._pp         = {}             # Cache of ((word, type), probability)-items.
+        self._x2         = {}             # Cache of (word, chi-squared p-value)-items.
         self._ig         = {}             # Cache of (word, information gain)-items.
+        self._gr         = {}             # Cache of (word, information gain ratio)-items.
+        self._inverted   = {}             # Cache of word => Document.
         self._vector     = None           # Cache of model vector with all the features in the model.
         self._classifier = None           # Classifier trained on the documents in the model (NB, KNN, SVM).
         self._lsa        = None           # LSA matrix with reduced dimensionality.
@@ -905,27 +964,40 @@ class Model(object):
     def load(cls, path):
         """ Loads the model from a gzipped pickle file created with Model.save().
         """
-        return cPickle.loads(gzip.GzipFile(path, "rb").read())
+        model = cPickle.loads(gzip.GzipFile(path, "rb").read())
+        # Deserialize Model.classifier.
+        if model.classifier:
+            p = path + ".tmp"
+            f = open(p, "wb")
+            f.write(model.classifier)
+            f.close()
+            model._classifier = Classifier.load(p)
+            os.remove(p)
+        return model
         
-    def save(self, path, update=False):
+    def save(self, path, update=False, final=False):
         """ Saves the model as a gzipped pickle file at the given path.
             The advantage is that cached vectors and cosine similarity are stored.
         """
+        # Update the cache before saving.
         if update:
-            # Update the entire cache before saving.
-            for d1 in self.documents:
+            classes = self.classes
+            self.document_frequency("")        # set self._df
+            self.inverted_index                # set self._inverted
+            self.vector                        # set self._vector
+            self.posterior_probability("", "") # set self._pp
+            self.chi_squared("")               # set self._x2
+            self.information_gain("")          # set self._ig + self._gr
+            for d1 in self.documents:          # set self._cos
                 for d2 in self.documents:
                     self.cosine_similarity(d1, d2)
-            for w in self.vector:
-                self.information_gain(w)
-        m = dict.fromkeys((d.id for d in self.documents), True)
-        for id1, id2 in self._cos.keys():
-            # Remove Model.search() query cache.
-            if id1 not in m \
-            or id2 not in m:
-                self._cos.pop((id1, id2))
+        # Serialize Model.classifier.
+        if self._classifier:
+            p = path + ".tmp"
+            self._classifier.save(p, final)
+            self._classifier = open(p, "rb").read(); os.remove(p)
         f = gzip.GzipFile(path, "wb")
-        f.write(cPickle.dumps(self, 1)) # 1 = binary
+        f.write(cPickle.dumps(self, 1))  # 1 = binary
         f.close()
         
     def export(self, path, format=ORANGE, **kwargs):
@@ -966,7 +1038,11 @@ class Model(object):
         # when a document is added or deleted (= new features).
         self._df  = {}
         self._cos = {}
+        self._pp  = {}
+        self._x2  = {}
         self._ig  = {}
+        self._gr  = {}
+        self._inverted = {}
         self._vector = None
         self._classifier = None
         self._lsa = None
@@ -1028,7 +1104,17 @@ class Model(object):
             return self._index[name]
             
     doc = document
-        
+    
+    def keywords(self, top=10, normalized=True):
+        """ Returns a sorted list of (relevance, word)-tuples that are top keywords in the model.
+            With normalized=True, weights are normalized between 0.0 and 1.0 (their sum will be 1.0).
+        """
+        self.df(None) # Populate document frequency cache.
+        n = normalized and sum(self._df.values()) or 1.0
+        v = ((f/n, w) for w, f in self._df.items())
+        v = heapq.nsmallest(top, v, key=lambda v: (-v[0], v[1]))
+        return v
+    
     def document_frequency(self, word):
         """ Returns the document frequency for the given word or feature.
             Returns 0 if there are no documents in the model (e.g. no word frequency).
@@ -1042,7 +1128,7 @@ class Model(object):
             # (i.e., calculated all at once). Drawback is if you need it for just one word.
             df = self._df
             for d in self.documents:
-                for w, f in d.terms.iteritems():
+                for w, f in d.terms.items():
                     if f != 0:
                         df[w] = (w in df) and df[w] + 1 or 1.0
             for w in df:
@@ -1066,6 +1152,22 @@ class Model(object):
         return log(1.0 / df, base)
         
     idf = inverse_document_frequency
+
+    @property
+    def inverted_index(self):
+        """ Yields a dictionary of (word, set([document1, document2, ...]))-items. 
+        """
+        if not self._inverted:
+            m = {}
+            for d in self.documents:
+                for w in d.terms:
+                    if w not in m:
+                        m[w] = set()
+                    m[w].add(d)
+            self._inverted = m
+        return self._inverted
+        
+    inverted = inverted_index
 
     @property
     def vector(self):
@@ -1117,8 +1219,10 @@ class Model(object):
         # it is available in cache for reuse.
         id1 = document1.id
         id2 = document2.id
-        if (id1, id2) in self._cos: return self._cos[(id1, id2)]
-        if (id2, id1) in self._cos: return self._cos[(id2, id1)]
+        if (id1, id2) in self._cos: 
+            return self._cos[(id1, id2)]
+        if (id2, id1) in self._cos: 
+            return self._cos[(id2, id1)]
         # Calculate the matrix multiplication of the document vectors.
         if not getattr(self, "lsa", None):
             v1 = document1.vector
@@ -1130,7 +1234,9 @@ class Model(object):
             v2 = id2 in self.lsa and self.lsa[id2] or self._lsa.transform(document2)
             s = cosine_similarity(v1, v2)
         # Cache the similarity weight for reuse.
-        self._cos[(id1, id2)] = s
+        if document1.model == self and \
+           document2.model == self:
+            self._cos[(id1, id2)] = s
         return s
         
     similarity = cos = cosine_similarity
@@ -1143,7 +1249,7 @@ class Model(object):
         # Filter the input document from the matches.
         # Filter documents that score zero, and return the top.
         v = [(w, d) for w, d in v if w > 0 and d.id != document.id]
-        v = heapq.nsmallest(top, v, key=lambda v: (-v[0],v[1]))
+        v = heapq.nsmallest(top, v, key=lambda v: (-v[0], v[1]))
         return v
         
     similar = related = neighbors = nn = nearest_neighbors
@@ -1221,78 +1327,198 @@ class Model(object):
         return self._lsa
         
     reduce = latent_semantic_analysis
-    
+
+    def condensed_nearest_neighbor(self, k=1, distance=COSINE):
+        """ Returns a filtered list of documents, without impairing classification accuracy.
+            Iteratively constructs a set of "prototype" documents.
+            Documents that are correctly classified by the set are discarded.
+            Documents that are incorrectly classified by the set are added to the set.
+        """
+        d = DistanceMap(method=distance)
+        u = []
+        v = list(self.documents)
+        b = False
+        while not b:
+            b = True
+            for i, x in enumerate(v):
+                nn = heapq.nsmallest(k, ((d(x.vector, y.vector), y) for y in u))
+                if not u or x.type in (y.type for d, y in nn):
+                    b = False
+                    u.append(x)
+                    v.pop(i)
+                    break
+        return v
+        
+    cnn = condensed_nearest_neighbor
+
+    def posterior_probability(self, word, type):
+        """ Returns the probability that a document with the given word is of the given type.
+        """
+        if not self._pp:
+            # p1: {class: count}
+            # p2: {feature: {class: count}}
+            # p3: {feature: count}
+            # p4: {(feature, class): probability}
+            p1 = defaultdict(float)
+            p2 = defaultdict(lambda: defaultdict(float))
+            p3 = defaultdict(float)
+            p4 = defaultdict(float)
+            for d in self.documents:
+                p1[d.type] += 1
+            for d in self.documents:
+                for f in d.terms:
+                    p2[f][d.type] += 1 / p1[d.type]
+                    p3[f] += 1
+            for t in p1:
+                for f in p3:
+                    p4[(f, t)] = p1[t] * p2[f][t] / p3[f]
+            self._pp = p4
+        return self._pp[(word, type)]
+
+    pp = probability = posterior_probability
+
+    def chi_squared(self, word):
+        """ Returns the chi-squared p-value (0.0-1.0) for the given feature.
+            When p < 0.05, the feature is biased to a class (document type),
+            i.e., it is a significant predictor for that class.
+        """
+        if not self._x2:
+            from pattern.metrics import chi2
+            # p1: {class: count}
+            # p2: {class: {feature: count}}
+            # p3: {feature: count}
+            # p4: {feature: p-value}
+            p1 = defaultdict(float)
+            p2 = defaultdict(lambda: defaultdict(float))
+            p3 = defaultdict(float)
+            p4 = defaultdict(float)
+            for d in self.documents:
+                p1[d.type] += 1
+            for d in self.documents:
+                for f in d.terms:
+                    p2[d.type][f] += 1
+                    p3[f] += 1
+            for f in p3:
+                p4[f] = chi2(observed=[[p2[t][f] for t in p2], [p1[t] - p2[t][f] for t in p2]])[1]
+            self._x2 = p4
+        return self._x2[word]
+        
+    X2 = x2 = chi2 = chi_square = chi_squared
+
     def information_gain(self, word):
-        """ Returns the information gain (IG) for the given feature, 
-            by examining how much it contributes to each document type (class).
-            High IG means low entropy (or predictability) = interesting for feature selection.
+        """ Returns the information gain (IG, 0.0-1.0) for the given feature,
+            by measuring how much the feature contributes to each document type (class).
+            High information gain means low entropy. Low entropy means predictability,
+            i.e., a feature that is biased towards some class(es),
+            i.e., a feature that occurs more in one document type and less in others.
         """
         if not self._ig:
             # Based on Vincent Van Asch, http://www.clips.ua.ac.be/~vincent/scripts/textgain.py
-            # For classes {xi...xn} and features {yi...yn}:
-            # IG(X,Y)  = H(X) - H(X|Y)
-            # H(X)     = -sum(p(x) * log2(x) for x in X)
-            # H(X|Y)   =  sum(p(y) * H(X|Y=y) for y in Y)
-            # H(X|Y=y) = -sum(p(x) * log2(x) for x in X if y in x)
+            # IG(f) = H(C) - sum(p(v) * H(C|v) for v in V)
+            # where C is the set of class labels,
+            # where V is the set of values for feature f,
+            # where p(v) is the probability that feature f has value v,
+            # where C|v is the distribution of value v for feature f per class.
             # H is the entropy for a list of probabilities.
             # Lower entropy indicates predictability, i.e., some values are more probable.
-            # H([0.50,0.50]) = 1.00
-            # H([0.75,0.25]) = 0.81
+            # H([0.50, 0.50]) = 1.00
+            # H([0.75, 0.25]) = 0.81
             H = entropy
-            # X = document type (class) distribution.
-            # "How many documents have class xi?"
-            X = dict.fromkeys(self.classes, 0)
+            # C => {class: count}
+            C = dict.fromkeys(self.classes, 0)
             for d in self.documents:
-                X[d.type] += 1
-            # Y = document feature distribution.
-            # "How many documents have feature yi?"
-            Y = dict.fromkeys(self.features, 0)
+                C[d.type] += 1
+            HC = H(C.values())
+            # V => {feature: {value: {class: count}}}
+            F = set(self.features)
+            V = dict((f, defaultdict(lambda: defaultdict(lambda: 0))) for f in F)
             for d in self.documents:
-                for y, v in d.terms.items():
-                    if v:
-                        Y[y] += 1 # Discrete: feature is present (1) or not (0).
-            Y = dict((y, Y[y] / float(len(self.documents))) for y in Y)
-            # XY = features by class distribution.
-            # "How many documents of class xi have feature yi?"
-            XY = dict.fromkeys(self.features, {})
-            for d in self.documents:
-                for y, v in d.terms.items():
-                    if v:
-                        XY[y][d.type] = XY[y].get(d.type, 0) + 1
-            # IG.
-            for y in self.features:
-                self._ig[y] = H(X.values()) - Y[y] * H(XY[y].values())
-        return self._ig[word]
+                if self.weight in (IG, GR, INFOGAIN, GAINRATIO):
+                    d_vector = dict.fromkeys(d.terms, True)
+                else:
+                    d_vector = d.vector
+                # Count features by value per class.
+                # Equal-width binning.
+                # Features with float values are taken to range between 0.0-1.0,
+                # for which 10 discrete intervals are used (0.1, 0.2, 0.3, ...).
+                for f, v in d_vector.items():
+                    if isinstance(v, float):
+                        v = round(v, 1)
+                    V[f][v][d.type] += 1
+                #for f in F - set(d_vector):
+                #    V[f][0][type] += 1
+                # We also need to count features with value 0.0.
+                # This is done with the two lines above, however
+                # the code below is over a 1000x faster (less dict.__getitem__).
+            for f in F:
+                for type, n in C.items():
+                    V[f][0][type] += n - sum(V[f][v][type] for v in V[f])
+            # IG
+            for f in F:
+                Vf = V[f]
+                n  = sum(sum(Vf[v].values()) for v in Vf) # total value count
+                n  = float(n) or 1
+                ig = HC
+                si = 0 # split info
+                for Cv in Vf.values():
+                    Cv = Cv.values()
+                    pv = sum(Cv) / n
+                    ig = ig - pv * H(Cv)
+                    si = si + H([pv])
+                self._ig[f] = ig
+                self._gr[f] = ig / (si or 1)
+        return self._ig.get(word, 0.0)
             
     IG = ig = infogain = gain = information_gain
     
-    def feature_selection(self, top=100, method=INFOGAIN, verbose=False):
-        """ Returns the top unpredictable (or original) features (terms), using information gain.
+    def gain_ratio(self, word):
+        """ Returns the information gain ratio (GR, 0.0-1.0) for the given feature.
+        """
+        if not self._gr: self.ig(word)
+        return self._gr[word]
+        
+    GR = gr = gainratio = gain_ratio
+    
+    def feature_selection(self, top=100, method=CHISQUARED, threshold=0.0, weighted=False):
+        """ Returns a list with the most informative features (terms), using information gain.
             This is a subset of Model.features that can be used to build a Classifier
             that is faster (less features = less matrix columns) but still efficient.
+            The given document frequency threshold excludes features that occur in 
+            less than the given percentage of documents (i.e., outliers).
         """
-        if method == IG:
-            subset = ((self.information_gain(w), w) for w in self.terms)
-            subset = sorted(subset, key=itemgetter(1))
-            subset = sorted(subset, key=itemgetter(0), reverse=True)
-            subset = [w for ig, w in subset[:top]]
-            return subset
+        if method is None:
+            f = lambda w: 1.0
+        if method in (X2, CHISQUARE, CHISQUARED, "X2"):
+            f = lambda w: 1.0 - self.x2(w)
+        if method in (IG, INFOGAIN):
+            f = self.ig
+        if method in (GR, GAINRATIO):
+            f = self.gr
+        if method == DF:
+            f = self.df
+        if hasattr(method, "__call__"):
+            f = method
+        subset = ((f(w), w) for w in self.terms if self.df(w) >= threshold)
+        subset = sorted(subset, key=itemgetter(1))
+        subset = sorted(subset, key=itemgetter(0), reverse=True)
+        subset = subset[:top if top is not None else len(subset)]
+        subset = subset if weighted else [w for x, w in subset]
+        return subset
         
-    def filter(self, features=[]):
+    def filter(self, features=[], documents=[]):
         """ Returns a new Model with documents only containing the given list of features,
             for example a subset returned from Model.feature_selection().
         """
+        documents = documents or self.documents
         features = set(features)
         model = Model(weight=self.weight)
         model.extend([
-            Document(dict((w, f) for w, f in d.terms.iteritems() if w in features),
+            Document(dict((w, f) for w, f in d.terms.items() if w in features),
                        name = d.name,
                        type = d.type,
                    language = d.language,
-                description = d.description) for d in self.documents])
+                description = d.description) for d in documents])
         return model
-    
-    # XXX Model.save() conflicts with Model.classifier.
     
     def train(self, *args, **kwargs):
         """ Trains Model.classifier with the document vectors.
@@ -1300,8 +1526,10 @@ class Model(object):
             Model.predict() can then be used to predict the type of other (unknown) documents.
         """
         if len(args) == 0:
-            Classifier = kwargs.pop("Classifier", "")
+            # Model.train(classifier=KNN)
+            Classifier = kwargs.pop("Classifier", NB)
         if len(args) >= 1:
+            # Model.train(KNN, k=1)
             Classifier = args[0]; args=args[1:]
         kwargs["train"] = self
         self._classifier = Classifier(*args, **kwargs)
@@ -1349,14 +1577,15 @@ class Apriori(object):
         for s1 in candidates:
             for s2 in sets:
                 if s1.issubset(s2):
-                    Lk[s1] = s1 in Lk and Lk[s1]+x or x
+                    Lk[s1] = s1 in Lk and Lk[s1] + x or x
         return dict((s, f) for s, f in Lk.items() if f >= support)
 
-    def __call__(self, sets, support=0.5):
+    def __call__(self, sets=[], support=0.5):
         """ Returns a dictionary of (set(features), frequency)-items.
             The given support (0.0-1.0) is the relative amount of documents
-            in which a combination of feature must appear.
+            in which a combination of features must appear.
         """
+        sets = [set(iterable) for iterable in sets]
         C1 = self.C1(sets)
         L1 = self.Lk(sets, C1, support)
         self._candidates = [L1.keys()]
@@ -1409,7 +1638,7 @@ class LSA(object):
             k = max(0, len(sigma) - k)
         if type(k).__name__ == "function":
             k = max(0, int(k(sigma)))
-        #print numpy.dot(u, numpy.dot(numpy.diag(sigma), vt))
+        #print(numpy.dot(u, numpy.dot(numpy.diag(sigma), vt)))
         # Apply dimension reduction.
         # The maximum length of a concept vector = the number of documents.
         assert k < len(model.documents), \
@@ -1424,7 +1653,7 @@ class LSA(object):
         self.model = model
         self._terms = dict(enumerate(model.vector().keys())) # Vt-index => word.
         self.u, self.sigma, self.vt = (
-            dict((d.id, Vector((i, float(x)) for i, x in enumerate(v))) for d, v in izip(model, u)),
+            dict((d.id, Vector((i, float(x)) for i, x in enumerate(v))) for d, v in zip(model, u)),
             list(sigma),
             [[float(x) for x in v] for v in vt]
         )
@@ -1450,7 +1679,7 @@ class LSA(object):
             where each concept is a dictionary of (concept_index, weight)-items.
             for document in lsa.model:
                 for concept in lsa.vectors(document.id):
-                    print document, concept
+                    print(document, concept)
         """
         return self.u
         
@@ -1489,7 +1718,7 @@ class LSA(object):
 _lsa_transform_cache = {}
 
 #def iter2array(iterator, typecode):
-#    a = numpy.array([iterator.next()], typecode)
+#    a = numpy.array([next(iterator)], typecode)
 #    shape0 = a.shape[1:]
 #    for (i, item) in enumerate(iterator):
 #        a.resize((i+2,) + shape0)
@@ -1625,7 +1854,7 @@ def k_means(vectors, k=None, iterations=10, distance=COSINE, seed=RANDOM, **kwar
                 if nearest != i: # Other cluster is nearer.
                     clusters[nearest].append(clusters[i].pop(clusters[i].index(v)))
                     converged = False
-        iterations -= 1; #print iterations
+        iterations -= 1; #print(iterations)
     return clusters
     
 kmeans = k_means
@@ -1733,7 +1962,7 @@ def hierarchical(vectors, k=1, iterations=1000, distance=COSINE, **kwargs):
     id = sequence()
     features  = kwargs.get("features", _features(vectors))
     clusters  = Cluster((v for v in shuffled(vectors)))
-    centroids = [(id.next(), v) for v in clusters]
+    centroids = [(next(id), v) for v in clusters]
     map = {}
     for _ in range(iterations):
         if len(clusters) <= max(k, 1): 
@@ -1760,7 +1989,7 @@ def hierarchical(vectors, k=1, iterations=1000, distance=COSINE, **kwargs):
         v = centroid(merged.flatten(), features)
         centroids.pop(j)
         centroids.pop(i)
-        centroids.append((id.next(), v))
+        centroids.append((next(id), v))
     return clusters
 
 #from pattern.vector import Vector
@@ -1769,7 +1998,7 @@ def hierarchical(vectors, k=1, iterations=1000, distance=COSINE, **kwargs):
 #v2 = Vector(wings=0, beak=0, claws=0, paws=1, fur=1) # dog
 #v3 = Vector(wings=1, beak=1, claws=1, paws=0, fur=0) # bird
 #
-#print hierarchical([v1, v2, v3])
+#print(hierarchical([v1, v2, v3]))
 
 #### CLASSIFIER ####################################################################################
 # Classification can be used to predict the label of an unlabeled document.
@@ -1791,8 +2020,9 @@ class Classifier(object):
             where document can be a Document, Vector, dict or string
             (dicts and strings are implicitly converted to vectors).
         """
+        data = getattr(self, "_data", {})
         self.description = ""       # Description of the dataset: author e-mail, etc.
-        self._data       = {}       # Custom data for (pickleable) subclasses.
+        self._data       = data     # Custom data to store when pickled.
         self._vectors    = []       # List of trained (type, vector)-tuples.
         self._classes    = {}       # Dict of (class, frequency)-items.
         self._baseline   = baseline # Default predicted class.
@@ -1833,14 +2063,14 @@ class Classifier(object):
     def majority(self):
         """ Yields the majority class (= most frequent class).
         """
-        d = sorted((v, k) for k, v in self._classes.iteritems())
+        d = sorted((v, k) for k, v in self._classes.items())
         return d and d[-1][1] or None
     
     @property
     def minority(self):
         """ Yields the minority class (= least frequent class).
         """
-        d = sorted((v, k) for k, v in self._classes.iteritems())
+        d = sorted((v, k) for k, v in self._classes.items())
         return d and d[0][1] or None
         
     @property
@@ -1850,7 +2080,17 @@ class Classifier(object):
         """
         if self._baseline not in (MAJORITY, FREQUENCY):
             return self._baseline
-        return ([(0, None)] + sorted([(v, k) for k, v in self._classes.iteritems()]))[-1][1]
+        return ([(0, None)] + sorted([(v, k) for k, v in self._classes.items()]))[-1][1]
+        
+    @property
+    def weighted_random_baseline(self):
+        """ Yields the weighted random baseline:
+            accuracy with classes predicted randomly according to their distribution.
+        """
+        n = float(sum(self.distribution.values())) or 1
+        return sum(map(lambda x: (x / n) ** 2, self.distribution.values()))
+    
+    wrb = weighted_random_baseline
         
     @property
     def skewness(self):
@@ -1860,10 +2100,10 @@ class Classifier(object):
         def moment(a, m, k=1):
             return sum([(x-m)**k for x in a]) / (len(a) or 1)
         # List each training instance by an int that represents its class:
-        a = list(chain(*([i] * v for i, (k, v) in enumerate(self._classes.iteritems()))))
+        a = list(chain(*([i] * v for i, (k, v) in enumerate(self._classes.items()))))
         m = float(sum(a)) / len(a) # mean
         return moment(a, m, 3) / (moment(a, m, 2) ** 1.5 or 1)
-
+        
     def train(self, document, type=None):
         """ Trains the classifier with the given document of the given type (i.e., class).
             A document can be a Document, Vector, dict, list or string.
@@ -1882,7 +2122,7 @@ class Classifier(object):
             return defaultdict(float)
         return self.baseline
 
-    def _vector(self, document, type=None):
+    def _vector(self, document, type=None, **kwargs):
         """ Returns a (type, Vector)-tuple for the given document.
             If the document is part of a LSA-reduced model, returns the LSA concept vector.
             If the given type is None, returns document.type (if a Document is given).
@@ -1896,7 +2136,7 @@ class Classifier(object):
         if isinstance(document, Vector):
             return type, document
         if isinstance(document, dict):
-            return type, Vector(document)
+            return type, Vector(document, **kwargs)
         if isinstance(document, (list, tuple)):
             return type, Document(document, filter=None, stopwords=True).vector
         if isinstance(document, basestring):
@@ -1914,11 +2154,12 @@ class Classifier(object):
         # Backwards compatibility.
         # In Pattern 2.5-, Classifier.test() is a classmethod.
         # In Pattern 2.6+, it is replaced with Classifier._test() once instantiated.
+        corpus = kwargs.pop("documents", kwargs.pop("train", corpus))
         if folds > 1:
             return K_fold_cross_validation(cls, documents=corpus, folds=folds, **kwargs)
         i = int(round(max(0.0, min(1.0, d)) * len(corpus)))
         d = shuffled(corpus)
-        return cls(train=d[:i]).test(d[i:])
+        return cls(train=d[:i], **kwargs).test(d[i:])
     
     def _test(self, documents=[], target=None, **kwargs):
         """ Returns an (accuracy, precision, recall, F1-score)-tuple for the given documents,
@@ -1929,43 +2170,21 @@ class Classifier(object):
             Recall is the percentage of documents that were correctly labeled.
             F1-score is the harmonic mean of precision and recall.
         """
-        A = [] # Accuracy.
-        P = [] # Precision.
-        R = [] # Recall.
-        for type, TP, TN, FP, FN in self.confusion_matrix(documents).split():
-            if type == target or target is None:
-                # Calculate precision & recall per class.
-                A.append(float(TP + TN) / ((TP + TN + FP + FN)))
-                P.append(float(TP) / ((TP + FP) or 1))
-                R.append(float(TP) / ((TP + FN) or 1))
-        # Macro-averaged:
-        A = sum(A) / (len(A) or 1)
-        P = sum(P) / (len(P) or 1)
-        R = sum(R) / (len(R) or 1)
-        F = 2.0 * P * R / ((P + R) or 1)
-        return A, P, R, F
-
-    def confusion_matrix(self, documents=[]):
-        """ Returns the confusion matrix for the given test data,
-            which is a list of Documents or (document, type)-tuples.
-        """
-        documents = [isinstance(d, Document) and (d, d.type) or d for d in documents]
-        return ConfusionMatrix(self.classify, documents)
+        return self.confusion_matrix(documents).test(target)
 
     def auc(self, documents=[], k=10):
         """ Returns the area under the ROC-curve.
             Returns the probability (0.0-1.0) that a classifier will rank 
             a random positive document (True) higher than a random negative one (False).
         """
-        roc = [(0.0, 0.0), (1.0, 1.0)]
-        for type, TP, TN, FP, FN in self.confusion_matrix(documents).split():
-            x = FPR = float(FP) / ((FP + TN) or 1) # false positive rate
-            y = TPR = float(TP) / ((TP + FN) or 1) #  true positive rate
-            roc.append((x, y))
-            #print "%s\t%s %s %s %s\t %s %s" % (TP, TN, FP, FN, FPR, TPR)
-        roc = sorted(roc)
-        # Trapzoidal rule: area = (a + b) * h / 2, where a=y0, b=y1 and h=x1-x0.
-        return sum(0.5 * (x1 - x0) * (y1 + y0) for (x0, y0), (x1, y1) in sorted(izip(roc, roc[1:])))
+        return self.confusion_matrix(documents).auc(k)
+        
+    def confusion_matrix(self, documents=[]):
+        """ Returns the confusion matrix for the given test data,
+            which is a list of Documents or (document, type)-tuples.
+        """
+        documents = [isinstance(d, Document) and (d, d.type) or d for d in documents]
+        return ConfusionMatrix(self.classify, documents)
 
     def save(self, path, final=False):
         """ Saves the classifier as a gzipped pickle file.
@@ -2022,7 +2241,7 @@ class ConfusionMatrix(defaultdict):
         FP = 0 # False positives (type I error).
         FN = 0 # False negatives (type II error).
         for t1 in self:
-            for t2, n in self[t1].iteritems():
+            for t2, n in self[t1].items():
                 if target == t1 == t2: 
                     TP += n
                 if target != t1 == t2: 
@@ -2032,9 +2251,43 @@ class ConfusionMatrix(defaultdict):
                 if target == t2 != t1: 
                     FP += n
         return (TP, TN, FP, FN)
-    
+        
+    def test(self, target=None):
+        """ Returns an (accuracy, precision, recall, F1-score)-tuple.
+        """
+        A = [] # Accuracy.
+        P = [] # Precision.
+        R = [] # Recall.
+        for type, TP, TN, FP, FN in self.split():
+            if type == target or target is None:
+                # Calculate precision & recall per class.
+                A.append(float(TP + TN) / ((TP + TN + FP + FN)))
+                P.append(float(TP) / ((TP + FP) or 1))
+                R.append(float(TP) / ((TP + FN) or 1))
+        # Macro-averaged:
+        A = sum(A) / (len(A) or 1.0)
+        P = sum(P) / (len(P) or 1.0)
+        R = sum(R) / (len(R) or 1.0)
+        F = 2.0 * P * R / ((P + R) or 1.0)
+        return A, P, R, F
+
+    def auc(self, k=10):
+        """ Returns the area under the ROC-curve.
+        """
+        roc = [(0.0, 0.0), (1.0, 1.0)]
+        for type, TP, TN, FP, FN in self.split():
+            x = FPR = float(FP) / ((FP + TN) or 1) # false positive rate
+            y = TPR = float(TP) / ((TP + FN) or 1) #  true positive rate
+            roc.append((x, y))
+            #print("%s\t%s %s %s %s\t %s %s" % (TP, TN, FP, FN, FPR, TPR))
+        roc = sorted(roc)
+        # Trapzoidal rule: area = (a + b) * h / 2, where a=y0, b=y1 and h=x1-x0.
+        return sum(0.5 * (x1 - x0) * (y1 + y0) for (x0, y0), (x1, y1) in sorted(zip(roc, roc[1:])))
+
     @property
     def table(self, padding=1):
+        """ Returns the matrix as a string with rows and columns.
+        """
         k = sorted(self)
         n = max(map(lambda x: len(decode_utf8(x)), k))
         n = max(n, *(len(str(self[k1][k2])) for k1 in k for k2 in k)) + padding
@@ -2049,38 +2302,73 @@ class ConfusionMatrix(defaultdict):
         return s
     
     def __repr__(self):
-        return repr(dict((k, dict(v)) for k, v in self.iteritems()))
+        return repr(dict((k, dict(v)) for k, v in self.items()))
 
 def K_fold_cross_validation(Classifier, documents=[], folds=10, **kwargs):
-    """ For 10-fold cross-validation, performs 10 separate tests of the classifier,
+    """ Returns an (accuracy, precisiom, recall, F1-score, standard deviation)-tuple.
+        For 10-fold cross-validation, performs 10 separate tests of the classifier,
         each with a different 9/10 training and 1/10 testing documents.
-        The given classifier is a class (Bayes, KNN, SVM)
+        The given list of documents contains Documents or (document, type)-tuples.
+        The given classifier is a class (NB, KNN, SLP, SVM)
         which is initialized with the given optional parameters.
     """
     K = kwargs.pop("K", folds)
-    d = [isinstance(d, Document) and (d, d.type) or d for d in documents]
-    d = shuffled(d) # Avoid a list sorted by type (because we take successive folds).
-    m = [0.0, 0.0, 0.0, 0.0] # Macro-average accuracy, precision, recall & F1-score.
-    for i in range(K):
-        n = len(d) / float(max(K, 2)) # Test fold size.
-        x = int(round(i * n))         # Test fold start index.
-        y = int(round(i * n + n))     # Test fold stop index.
-        classifier = Classifier(train=d[:x]+d[y:], **kwargs)
-        A, P, R, F = classifier.test(d[x:y], **kwargs)
+    s = kwargs.pop("shuffled", True)
+    # Macro-average accuracy, precision, recall & F1-score.
+    m = [0.0, 0.0, 0.0, 0.0] 
+    f = []
+    # Create shuffled folds to avoid a list sorted by type 
+    # (we take successive folds and the source data could be sorted).
+    if isinstance(K, (int, float, long)):
+        folds = list(_folds(shuffled(documents) if s else documents, K))
+    # K tests with different train (d1) and test (d2) sets.
+    for d1, d2 in folds:
+        d1 = [isinstance(d, Document) and (d, d.type) or d for d in d1]
+        d2 = [isinstance(d, Document) and (d, d.type) or d for d in d2]
+        classifier = Classifier(train=d1, **kwargs)
+        A, P, R, F = classifier.test(d2, **kwargs)
         m[0] += A
         m[1] += P
         m[2] += R
         m[3] += F
-    return tuple([v / (K or 1) for v in m])
+        f.append(F)
+    # F-score mean & variance.
+    K = len(folds)
+    u = float(sum(f)) / (K or 1.0)
+    o = float(sum((x - u) ** 2 for x in f)) / (K-1 or 1.0)
+    o = sqrt(o)
+    return tuple([v / (K or 1.0) for v in m] + [o])
     
 kfoldcv = K_fold_cv = k_fold_cv = k_fold_cross_validation = K_fold_cross_validation
 
+def folds(documents=[], K=10, **kwargs):
+    """ Returns an iterator of K folds, where each fold is a (train, test)-tuple.
+        For example, for 10-fold cross-validation, it yields 10 tuples,
+        each with a different 9/10 training and 1/10 testing documents.
+    """
+    def chunks(iterable, n=10):
+        # Returns an iterator of n lists of roughly equal size.
+        # http://www.garyrobinson.net/2008/04/splitting-a-pyt.html
+        a = list(iterable)
+        i = 0
+        j = 0
+        for m in xrange(n):
+            j = i + len(a[m::n])
+            yield a[i:j]
+            i = j
+    k = kwargs.get("k", K)
+    d = list(chunks(documents, max(k, 2)))
+    for holdout in xrange(k):
+        yield list(chain(*(d[:holdout] + d[holdout+1:]))), d[holdout]
+
+_folds = folds
+
 def gridsearch(Classifier, documents=[], folds=10, **kwargs):
     """ Returns the test results for every combination of optional parameters,
-        using K-fold cross-validation for the given classifier (Bayes, KNN, SVM).
+        using K-fold cross-validation for the given classifier (NB, KNN, SLP, SVM).
         For example:
-        for (A, P, R, F), p in gridsearch(SVM, data, c=[0.1, 1, 10]):
-            print (A, P, R, F), p
+        for (A, P, R, F, o), p in gridsearch(SVM, data, c=[0.1, 1, 10]):
+            print((A, P, R, F, o), p)
         > (0.919, 0.921, 0.919, 0.920), {"c": 10}
         > (0.874, 0.884, 0.865, 0.874), {"c": 1}
         > (0.535, 0.424, 0.551, 0.454), {"c": 0.1}
@@ -2093,7 +2381,7 @@ def gridsearch(Classifier, documents=[], folds=10, **kwargs):
             p = [x + [y] for x in p for y in iterable]
         for p in p:
             yield tuple(p)
-    s = [] # [((A, P, R, F), parameters), ...]
+    s = [] # [((A, P, R, F, o), parameters), ...]
     p = [] # [[("c", 0.1), ("c", 10), ...], 
            #  [("gamma", 0.1), ("gamma", 0.2), ...], ...]
     for k, v in kwargs.items():
@@ -2103,6 +2391,24 @@ def gridsearch(Classifier, documents=[], folds=10, **kwargs):
         s.append((K_fold_cross_validation(Classifier, documents, folds, **p), p))
     return sorted(s, reverse=True)
 
+def feature_selection(documents=[], top=None, method=CHISQUARED, threshold=0.0):
+    """ Returns an iterator of (feature, weight, (probability, class))-tuples,
+        sorted by the given feature selection method (IG, GR, X2) and document frequency threshold.
+    """
+    a = []
+    for i, d in enumerate(documents):
+        if not isinstance(d, Document):
+            d = Document(d[0], type=d[1], stopwords=True)
+        a.append(d)
+    m = Model(a, weight=None)
+    p = m.posterior_probability
+    c = m.classes
+    for w, f in m.feature_selection(top, method, threshold, weighted=True):
+        # For each feature, retrieve the class with the maximum probabilty.
+        yield f, w, max([(p(f, type), type) for type in c])
+    
+fsel = feature_selection
+
 #--- NAIVE BAYES CLASSIFIER ------------------------------------------------------------------------
 
 MULTINOMIAL = "multinomial" # Feature weighting.
@@ -2111,7 +2417,7 @@ BERNOUILLI  = "bernouilli"  # Feature occurs in class (1) or not (0).
 
 class NB(Classifier):
     
-    def __init__(self, train=[], baseline=MAJORITY, method=MULTINOMIAL, alpha=0.0001):
+    def __init__(self, train=[], baseline=MAJORITY, method=MULTINOMIAL, alpha=0.0001, **kwargs):
         """ Naive Bayes is a simple supervised learning method for text classification.
             Documents are classified based on the probability that a feature occurs in a class,
             (independent of other features).
@@ -2144,8 +2450,8 @@ class NB(Classifier):
         self._classes[type] = self._classes.get(type, 0) + 1
         self._likelihood.setdefault(type, {})
         self._cache.pop(type, None)
-        for f, w in vector.iteritems():
-            if self._method in (BINOMIAL, BERNOUILLI):
+        for f, w in vector.items():
+            if self._method in (BINARY, BINOMIAL, BERNOUILLI):
                 w = 1
             self._features[f] = self._features.get(f, 0) + 1
             self._likelihood[type][f] = self._likelihood[type].get(f, 0) + w
@@ -2162,13 +2468,13 @@ class NB(Classifier):
         v = self._vector(document)[1]
         m = self._method
         a = self._alpha
-        n = self._classes.itervalues()
+        n = self._classes.values()
         n = float(sum(n))
         p = defaultdict(float)
         for type in self._classes:
             if m == MULTINOMIAL:
                 if not type in self._cache: # 10x faster
-                    self._cache[type] = float(sum(self._likelihood[type].itervalues()))
+                    self._cache[type] = float(sum(self._likelihood[type].values()))
                 d = self._cache[type]
             if m == BINOMIAL \
             or m == BERNOUILLI:
@@ -2178,7 +2484,7 @@ class NB(Classifier):
             g = exp(g) * self._classes[type] / n # prior
             p[type] = g
         # Normalize probability estimates.
-        s = sum(p.itervalues()) or 1
+        s = sum(p.values()) or 1
         for type in p:
             p[type] /= s
         if not discrete:
@@ -2186,8 +2492,8 @@ class NB(Classifier):
         try:
             # Ties are broken in favor of the majority class
             # (random winner for majority ties).
-            m = max(p.itervalues())
-            p = sorted((self._classes[type], type) for type, g in p.iteritems() if g == m > 0)
+            m = max(p.values())
+            p = sorted((self._classes[type], type) for type, g in p.items() if g == m > 0)
             p = [type for frequency, type in p if frequency == p[0][0]]
             return choice(p)
         except:
@@ -2199,7 +2505,7 @@ Bayes = NaiveBayes = NB
 
 class KNN(Classifier):
     
-    def __init__(self, train=[], baseline=MAJORITY, k=10, distance=COSINE):
+    def __init__(self, train=[], baseline=MAJORITY, k=10, distance=COSINE, **kwargs):
         """ k-nearest neighbor (kNN) is a simple supervised learning method for text classification.
             Documents are classified by a majority vote of nearest neighbors (cosine distance)
             in the training data.
@@ -2237,8 +2543,8 @@ class KNN(Classifier):
         try:
             # Ties are broken in favor of the majority class
             # (random winner for majority ties).
-            m = max(p.itervalues())
-            p = sorted((self._classes[type], type) for type, w in p.iteritems() if w == m > 0)
+            m = max(p.values())
+            p = sorted((self._classes[type], type) for type, w in p.items() if w == m > 0)
             p = [type for frequency, type in p if frequency == p[0][0]]
             return choice(p)
         except:
@@ -2256,30 +2562,159 @@ NearestNeighbor = kNN = KNN
 #for d in (d1, d2, d3):
 #    knn.train(d)
 #
-#print knn.binary
-#print knn.classes
-#print knn.classify(Document("something that can fly"))
-#print KNN.test((d1, d2, d3), folds=2)
+#print(knn.binary)
+#print(knn.classes)
+#print(knn.classify(Document("something that can fly")))
+#print(KNN.test((d1, d2, d3), folds=2))
+
+#--- INFORMATION GAIN TREE --------------------------------------------------------------------------
+
+class IGTreeNode(list):
+    
+    def __init__(self, feature=None, value=None, type=None):
+        self.feature = feature
+        self.value = value
+        self.type = type
+        
+    @property
+    def children(self):
+        return self
+        
+    @property
+    def leaf(self):
+        return len(self) == 0
+
+class IGTree(Classifier):
+
+    def __init__(self, train=[], baseline=MAJORITY, method=GAINRATIO, **kwargs):
+        """ IGTREE is a supervised learning method
+            where training data is represented as a tree ordered by information gain.
+            A feature is taken to occur in a vector (1) or not (0), i.e. BINARY weight.
+        """
+        self._root   = None
+        self._method = method
+        Classifier.__init__(self, train, baseline)
+
+    @property
+    def method(self):
+        return self._method
+            
+    def _tree(self, vectors=[], features=[]):
+        """ Returns a tree of nested IGTREE.Node objects,
+            where the given list of vectors contains (Vector, class)-tuples, and
+            where the given list of features is sorted by information gain ratio.
+        """
+        # Daelemans, W., van den Bosch, A., Weijters, T. (1997).
+        # IGTree: Using trees for compression and classification in lazy learning algorithms.
+        # Artificial Intelligence Review 11, 407-423.
+        vectors = list(vectors)
+        features = list(features)
+        if len(vectors) == 0 or len(features) == 0:
+            return IGTreeNode()
+        # {class: count}
+        classes = defaultdict(int)
+        for v, type in vectors:
+            classes[type] += 1
+        # Find the most frequent class for the set of vectors.
+        c = max(classes, key=classes.__getitem__)
+        # Find the most informative feature f.
+        f = features[0]
+        n = IGTreeNode(feature=f, type=c)
+        # The current node has a hyperplane on feature f,
+        # and the majority class in the set of vectors.
+        if len(classes) == 1:
+            return n
+        if len(features) == 1:
+            return n
+        # Partition the set of vectors into subsets
+        # (vectors with the same value for feature f are in the same subset).
+        p = defaultdict(list)
+        for v, type in vectors:
+            #x = round(v.get(f, 0.0), 1)
+            x = f in v
+            p[x].append((v, type))
+        # If not all vectors in a subset have the same class,
+        # build IGTREE._tree(subset, features[1:]) and connect it to the current node.
+        for x in p:
+            if any((type != c) for v, type in p[x]):
+                n.append(self._tree(p[x], features[1:]))
+                n[-1].value = x
+        return n
+        
+    def _search(self, node, vector):
+        """ Returns the predicted class for the given Vector.
+        """
+        while True:
+            #x = round(vector.get(node.feature, 0.0), 1)
+            x = node.feature in vector
+            b = False
+            for n in node.children:
+                if n.value == x: 
+                    b = True
+                    break
+            if b is False:
+                return node.type
+            node = n
+            
+    def _train(self):
+        """ Calculates information gain ratio for the features in the training data.
+            Constructs the search tree.
+        """
+        m = Model((Document(set(v), type=type) for type, v in self._vectors), weight=BINARY)
+        f = sorted(m.features, key=getattr(m, self._method), reverse=True)
+        sys.setrecursionlimit(max(len(f) * 2, 1000))
+        self._root = self._tree([(v, type) for type, v in self._vectors], features=f)
+        
+    def classify(self, document, discrete=True):
+        """ Returns the type with the highest probability for the given document.
+            If the classifier has been trained on LSA concept vectors
+            you need to supply LSA.transform(document).
+        """
+        if self._root is None:
+            self._train()
+        return self._search(self._root, self._vector(document)[1])
+    
+    def finalize(self):
+        """ Removes training data from memory, keeping only the IG tree,
+            reducing file size with Classifier.save().
+        """
+        if self._root is None:
+            self._train()
+        self._vectors = []
+
+IGTREE = IGTree
+
+#from pattern.db import csv, pd
+#data = csv(pd("..", "..", "test", "corpora", "polarity-nl-bol.com.csv"))
+#data = ((review, score) for score, review in data)
+#
+#print(kfoldcv(IGTree, data, folds=3))
 
 #--- SINGLE-LAYER PERCEPTRON ------------------------------------------------------------------------
 
 class SLP(Classifier):
     
-    def __init__(self, train=[], baseline=MAJORITY, iterations=1):
+    def __init__(self, train=[], baseline=MAJORITY, iterations=1, **kwargs):
         """ Perceptron (SLP, single-layer averaged perceptron) is a simple artificial neural network,
             a supervised learning method sometimes used for i.a. part-of-speech tagging.
             Documents are classified based on the neuron that outputs the highest weight
             for the given inputs (i.e., document vector features).
             A feature is taken to occur in a vector (1) or not (0), i.e. BINARY weight.
         """
-        self._weight    = defaultdict(dict) # {class: {feature: (weight, weight sum, timestamp)}}
-        self._iteration = 0
+        self._weight     = defaultdict(dict) # {class: {feature: (weight, weight sum, timestamp)}}
+        self._iterations = iterations
+        self._iteration  = 0
+        train = list(train)
         train = chain(*(shuffled(train) for i in range(iterations)))
         Classifier.__init__(self, train, baseline)
 
     @property
+    def iterations(self):
+        return self._iterations
+
+    @property
     def features(self):
-        return list(set(chain(*(f.iterkeys() for f in self._weight.itervalues()))))
+        return list(set(chain(*(f.keys() for f in self._weight.values()))))
         
     def train(self, document, type=None):
         """ Trains the classifier with the given document of the given type (i.e., class).
@@ -2315,7 +2750,7 @@ class SLP(Classifier):
         i = self._iteration or 1
         i = float(i)
         p = defaultdict(float)
-        for type, w in self._weight.iteritems():
+        for type, w in self._weight.items():
             #p[type] = sum(w[f][0] for f in v if f in w) # Without averaging.
             s = 0
             for f in v:
@@ -2324,8 +2759,8 @@ class SLP(Classifier):
                     s += ((i-j) * w0 + w1) / i
             p[type] = s
         # Normalize probability estimates.
-        m = min(chain(p.itervalues(), (0,)))
-        s = sum(x-m for x in p.itervalues()) or 1
+        m = min(chain(p.values(), (0,)))
+        s = sum(x-m for x in p.values()) or 1
         for type in p:
             p[type] -= m
             p[type] /= s
@@ -2334,14 +2769,20 @@ class SLP(Classifier):
         try:
             # Ties are broken in favor of the majority class
             # (random winner for majority ties).
-            m = max(p.itervalues())
-            p = sorted((self._classes[type], type) for type, w in p.iteritems() if w == m > 0)
+            m = max(p.values())
+            p = sorted((self._classes[type], type) for type, w in p.items() if w == m > 0)
             p = [type for frequency, type in p if frequency == p[0][0]]
             return choice(p)
         except:
             return self.baseline
+            
+    def finalize(self):
+        """ Removes training data from memory, keeping only the node weights,
+            reducing file size with Classifier.save().
+        """
+        self._vectors = []
 
-ANN = NN = AP = AveragedPerceptron = Perceptron = SLP
+AP = AveragedPerceptron = Perceptron = SLP
 
 # Perceptron learns one training example at a time,
 # adjusting weights if the example is predicted wrong.
@@ -2353,6 +2794,208 @@ ANN = NN = AP = AveragedPerceptron = Perceptron = SLP
 #for i in range(5):
 #    for v in shuffled(data):
 #        p.train(v)
+
+#--- BACKPROPAGATION NEURAL NETWORK -----------------------------------------------------------------
+# "Deep learning" refers to deep neural networks and deep belief systems.
+# Deep neural networks are networks that have hidden layers between the input and output layers.
+# By contrast, Perceptron directly feeds the input to the output layer.
+
+# Weight initialization:
+RANDOM = "random"
+
+def matrix(m, n, a=0.0, b=0.0):
+    """ Returns an n x m matrix with values 0.0.
+        If a and b are given, values are uniformly random between a and b.
+    """
+    if a == b == 0:
+        return [[0.0] * n for i in xrange(m)]
+    return [[uniform(a, b) for j in xrange(n)] for i in xrange(m)]
+
+def sigmoid(x):
+    """ Forward propagation activation function.
+    """
+    #return 1.0 / (1.0 + math.exp(-x))
+    return tanh(x)
+        
+def dsigmoid(y):
+    """ Backward propagation activation function derivative.
+    """
+    #return y * (1.0 - y)
+    return 1.0 - y * y
+
+class BPNN(Classifier):
+    
+    def __init__(self, train=[], baseline=MAJORITY, layers=2, iterations=1000, **kwargs):
+        """ Backpropagation neural network (BPNN) is a supervised learning method 
+            bases on a network of interconnected neurons
+            inspired by an animal's nervous system (i.e., the brain).
+        """
+        # Based on:
+        # http://www.cs.pomona.edu/classes/cs30/notes/cs030neural.py
+        # http://arctrix.com/nas/python/bpnn.py
+        self._layers     = layers
+        self._iterations = iterations
+        self._rate       = kwargs.get("rate", 0.5)
+        self._momentum   = kwargs.get("momentum", 0.1)
+        self._trained    = False
+        Classifier.__init__(self, train, baseline)
+
+    @property
+    def layers(self):
+        return self._layers
+    @property
+    def iterations(self):
+        return self._iterations
+    @property
+    def rate(self):
+        return self._rate
+    @property
+    def momentum(self):
+        return self._momentum
+    
+    learningrate = learning_rate = rate
+
+    def _weight_initialization(self, i=1, o=1, hidden=1, method=RANDOM, a=0.0, b=1.0):
+        """ Initializes the network with the given number of input, hidden, output nodes.
+            Initializes the node weights uniformly random between a and b.
+        """
+        i += 1 # bias
+        # Node activation.
+        self._ai = [1.0] * i
+        self._ao = [1.0] * o
+        self._ah = [1.0] * hidden
+        # Node weights (w) and recent change (c).
+        self._wi = matrix(i, hidden, a, b)
+        self._ci = matrix(i, hidden)
+        self._wo = matrix(hidden, o, a, b)
+        self._co = matrix(hidden, o)
+
+    def _propagate_forward(self, input=[]):
+        """ Propagates the input through the network and returns the output activiation.
+        """
+        ai, ao, ah, wi, wo = self._ai,  self._ao, self._ah, self._wi, self._wo
+        assert len(input) == len(ai) - 1
+        # Activate input nodes.
+        for i, v in enumerate(input):
+            ai[i] = v
+        # Activate hidden nodes.
+        for j, v in enumerate(ah):
+            ah[j] = sigmoid(sum((v * wi[i][j] for i, v in enumerate(ai))))
+        # Activate output nodes.
+        for k, v in enumerate(ao):
+            ao[k] = sigmoid(sum((v * wo[j][k] for j, v in enumerate(ah))))
+        return list(ao)
+
+    def _propagate_backward(self, output=[], rate=0.5, momentum=0.1):
+        """ Propagates the output through the network and
+            generates delta for hidden and output nodes.
+            The learning rate determines speed vs. accuracy of the algorithm.
+        """
+        ai, ao, ah, wi, wo, ci, co = self._ai,  self._ao, self._ah, self._wi, self._wo, self._ci, self._co
+        # Compute delta for output nodes.
+        do = [0.0] * len(ao)
+        for k, v in enumerate(ao):
+            error = output[k] - v
+            do[k] = error * dsigmoid(v)
+        # Compute delta for hidden nodes.
+        dh = [0.0] * len(ah)
+        for j, v in enumerate(ah):
+            error = sum(do[k] * wo[j][k] for k in range(len(ao)))
+            dh[j] = error * dsigmoid(v)
+        # Update output weights.
+        for j, v1 in enumerate(ah):
+            for k, v2 in enumerate(ao):
+                change = do[k] * v1
+                wo[j][k] += rate * change + momentum * co[j][k]
+                co[j][k] = change
+        # Update input weight.
+        for i, v1 in enumerate(ai):
+            for j, v2 in enumerate(ah):
+                change = dh[j] * v1
+                wi[i][j] += rate * change + momentum * ci[i][j]
+                ci[i][j] = change
+        # Compute and return error.
+        return sum(0.5 * (output[k] - v) ** 2 for k, v in enumerate(ao))
+        
+    _backprop = _propagate_backward
+        
+    def _train(self, data=[], iterations=1000, rate=0.5, momentum=0.1):
+        """ Trains the network with the given data using backpropagation.
+            The given data is a list of (input, output)-tuples, 
+            where each input and output a list of values.
+            For example, to learn the XOR-function:
+            nn = BPNN()
+            nn._weight_initialization(2, 1, hidden=2)
+            nn._train([
+                ([0,0], [0]),
+                ([0,1], [1]),
+                ([1,0], [1]),
+                ([1,1], [0])
+            ])
+            print(nn._classify([0,0]))
+            print(nn._classify([0,1]))
+        """
+        # Error decreases with each iteration.
+        for i in range(iterations):
+            error = 0.0
+            for input, output in data:
+                self._propagate_forward(input)
+                error += self._propagate_backward(output, rate, momentum)
+                
+    def _classify(self, input):
+        return self._propagate_forward(input)
+
+    def train(self, document, type=None):
+        """ Trains the classifier with the given document of the given type (i.e., class).
+            A document can be a Document, Vector, dict, list or string.
+            If no type is given, Document.type will be used instead.
+        """
+        Classifier.train(self, document, type)
+        self._trained = False
+
+    def classify(self, document, discrete=True):
+        """ Returns the type with the highest probability for the given document.
+            If the classifier has been trained on LSA concept vectors
+            you need to supply LSA.transform(document).
+        """
+        if not self._trained:
+            # Batch learning (we need to know the number of features in advance).
+            n  = float(len(self.classes)) - 1
+            H1 = list(sorted(self.features))
+            H2 = dict((x, i/n) for i, x in enumerate(self.classes))  # Class => float hash (0.0-1.0).
+            H3 = dict((i/n, x) for i, x in enumerate(self.classes))  # Class reversed hash.
+            v  = [([v.get(f, 0.0) for f in H1], [H2[type]]) for type, v in self._vectors]
+            self._h = (H1, H2, H3)
+            self._weight_initialization(i=len(H1), o=1, hidden=self._layers, a=0.0, b=1.0)
+            self._train(v, self._iterations, self._rate, self._momentum)
+            self._trained = True
+        H1, H2, H3 = self._h
+        v = self._vector(document)[1]
+        i = [v.get(f, 0.0) for f in H1]
+        o = self._classify(i)[0]
+        c = min(H3.keys(), key=lambda k: abs(k - o))
+        c = H3[c]
+        return c
+
+    def finalize(self):
+        """ Removes training data from memory, keeping only the node weights,
+            reducing file size with Classifier.save().
+        """
+        self._vectors = []
+
+ANN = NN = NeuralNetwork = BPNN
+
+#nn = BPNN()
+#nn._weight_initialization(2, 1, hidden=2)
+#nn._train([
+#    ([0,0], [0]),
+#    ([0,1], [1]),
+#    ([1,0], [1]),
+#    ([1,1], [0])
+#])
+#print(nn._classify([0,0]))
+#print(nn._classify([0,1]))
+#print
 
 #--- SUPPORT VECTOR MACHINE ------------------------------------------------------------------------
 # Pattern comes bundled with LIBSVM 3.17:
@@ -2395,7 +3038,7 @@ class SVM(Classifier):
             -      type = CLASSIFICATION, 
             -    kernel = LINEAR, 
             -    degree = 3, 
-            -     gamma = 1/len(SVM.features), 
+            -     gamma = 1 / len(SVM.features), 
             -    coeff0 = 0,
             -      cost = 1, 
             -   epsilon = 0.01, 
@@ -2415,6 +3058,8 @@ class SVM(Classifier):
             kwargs.get("extensions", 
             kwargs.get("extension", (LIBSVM, LIBLINEAR)))
         # Optional parameters are read-only:
+        # -  cost: higher cost = less margin for error (and risk of overfitting).
+        # - gamma: influence ("radius") of each training example for RBF.
         if len(args) > 0: 
             kwargs.setdefault( "train", args[0])
         if len(args) > 1: 
@@ -2434,6 +3079,16 @@ class SVM(Classifier):
             (  "shrinking", "h", True)):
                 v = kwargs.get(k2, kwargs.get(k1, v))
                 setattr(self, "_"+k1, v)
+        # SVC/SVR/SVO alias.
+        if self._type == "svc":
+            self._type = SVC
+        if self._type == "svr":
+            self._type = SVR
+        if self._type == "svo":
+            self._type = SVO
+        # RBF alias.
+        if self._kernel == "rbf":
+            self._kernel = RBF
         Classifier.__init__(self, train=kwargs.get("train", []), baseline=MAJORITY)
     
     @property
@@ -2513,7 +3168,7 @@ class SVM(Classifier):
         H2 = dict((w, i+1) for i, w in enumerate(self.classes))      # Class => integer hash.
         H3 = dict((i+1, w) for i, w in enumerate(self.classes))      # Class reversed hash.
         x  = map(lambda v: dict(map(lambda k: (H1[k], v[k]), v)), M) # Hashed vectors.
-        y  = map(lambda (type, v): H2[type], self._vectors)          # Hashed classes.
+        y  = map(lambda v: H2[v[0]], self._vectors)                  # Hashed classes.
         # For linear SVC, use LIBLINEAR which is faster.
         # For kernel SVC, use LIBSVM.
         if self.extension == LIBLINEAR:
@@ -2555,7 +3210,7 @@ class SVM(Classifier):
         H3 = self._model[3]
         n  = len(H1)
         v  = self._vector(document)[1]
-        v  = dict(map(lambda (i, k): (H1.get(k, n+i+1), v[k]), enumerate(v)))
+        v  = dict(map(lambda k: (H1.get(k[1], k[0] + n + 1), v[k[1]]), enumerate(v)))
         # For linear SVC, use LIBLINEAR which is 10x faster.
         # For kernel SVC, use LIBSVM.
         if self.extension == LIBLINEAR:
@@ -2622,21 +3277,20 @@ class SVM(Classifier):
         # 2) Extract the model string and save it as a temporary file.
         # 3) Use pattern.vector.svm's LIBSVM or LIBLINEAR to load the file.
         # 4) Delete the temporary file.
-        import svm                                         # 1
+        import svm                               # 1
         self._svm = svm
         if self._model is not None:
-            p = path + ".tmp"
-            f = open(p, "wb")
-            f.write(self._model[0])                       # 2
-            f.close()
+            f = tempfile.NamedTemporaryFile("r+b")
+            f.write(self._model[0])              # 2
+            f.seek(0)
             if self.extension == LIBLINEAR and not svm.LIBLINEAR:
-                raise ImportError, "can't import liblinear"
+                raise ImportError("can't import liblinear")
             if self.extension == LIBLINEAR:
-                m = self._svm.liblinearutil.load_model(p)
+                m = self._svm.liblinearutil.load_model(f.name)
             if self.extension == LIBSVM:
-                m = self._svm.libsvmutil.svm_load_model(p)
-            self._model = (m,) + self._model[1:]           # 3
-            os.remove(f.name)                              # 4
+                m = self._svm.libsvmutil.svm_load_model(f.name)
+            self._model = (m,) + self._model[1:] # 3
+            f.close()                            # 4
             
     def finalize(self):
         """ Removes training data from memory, keeping only the LIBSVM/LIBLINEAR trained model,
@@ -2662,9 +3316,9 @@ class SVM(Classifier):
 #    return chngrams(s, n=4)
 #
 #data = CSV.load(os.path.join("..", "..", "test", "corpora", "polarity-nl-bol.com.csv"))
-#data = map(lambda (p, review): (v(review), int(p) > 0), data)
+#data = map(lambda p, review: (v(review), int(p) > 0), data)
 #
-#print kfoldcv(SVM, data, folds=3)
+#print(kfoldcv(SVM, data, folds=3))
 
 #---------------------------------------------------------------------------------------------------
 # I hate to spoil your party..." by Lars Buitinck.
@@ -2678,11 +3332,11 @@ class SVM(Classifier):
 #    return count(words(s) + ngrams(s, n=2))
 #    
 #data = CSV.load(os.path.join("..", "..", "test", "corpora", "polarity-nl-bol.com.csv"))
-#data = map(lambda (p, review): Document(v(review), type=int(p) > 0), data)
+#data = map(lambda p, review: Document(v(review), type=int(p) > 0), data)
 #data = Model(data, weight="tf-idf")
 #
 #for p in gridsearch(SVM, data, c=[0.1, 1, 10], folds=3):
-#    print p
+#    print(p)
 
 # This reports 92% accuracy for the best run (c=10).
 # Of course, it's optimizing for the same cross-validation 

@@ -1,4 +1,4 @@
-import os, sys; sys.path.insert(0, os.path.join("..", ".."))
+import os, sys; sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 import random
 
 from pattern.db     import Datasheet
@@ -39,7 +39,8 @@ classifier = SVM()
 # which we use to randomly arrange the reviews in the list:
 
 print "loading data..."
-data = Datasheet.load(os.path.join("..","..","test","corpora","polarity-nl-bol.com.csv"))
+data = os.path.join(os.path.dirname(__file__), "..", "..", "test", "corpora", "polarity-nl-bol.com.csv")
+data = Datasheet.load(data)
 data = shuffled(data)
 
 # We do not necessarily need Document objects as in the previous examples.

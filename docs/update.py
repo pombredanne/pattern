@@ -27,6 +27,7 @@ template = """
         #header, #header-inner { height: 175px; }
         #header { border-bottom: 1px solid #C6D4DD;  }
         table { border-collapse: collapse; }
+        #checksum { display: none; }
     </style>
     <link href="../js/shCore.css" rel="stylesheet" type="text/css" />
     <link href="../js/shThemeDefault.css" rel="stylesheet" type="text/css" />
@@ -85,7 +86,7 @@ for p in ("-", "-web", "-db", "-search", "-vector", "-graph", "-canvas", "-metri
     html = strip_between('<div id="navbar">', '/#navbar -->', html)
     html = strip_between('<div id="sidebar-right">', '/#sidebar-right -->', html)
     html = strip_between('<div id="footer">', '/#footer -->', html)
-    html = strip_between('<a href="http://twitter.com/share"', '</a>', html)
+    html = strip_between('<a class="twitter-share-button"', '</a>', html)
     # Link to local pages and images.
     # Link to online media.
     html = html.replace('href="/pages/MBSP"', 'href="%sMBSP"' % url)                   # MBSP docs (online)
@@ -99,11 +100,12 @@ for p in ("-", "-web", "-db", "-search", "-vector", "-graph", "-canvas", "-metri
     # Apply the simplified template + set page titles.
     html = template % (p, url+p, url+p, title, html)
     # Generate offline HTML file.
-    f = codecs.open(os.path.join("html", "%s.html" % p), "w", encoding="utf-8")
+    f = os.path.join(os.path.dirname(__file__), "html", "%s.html" % p)
+    f = codecs.open(f, "w", encoding="utf-8")
     f.write(html)
     f.close()
 
 # Create index.html (which simply redirects to pattern.html).
-f = open("index.html", "w")
+f = open(os.path.join(os.path.dirname(__file__), "index.html"), "w")
 f.write('<meta http-equiv="refresh" content="0; url=html/pattern.html" />')
 f.close()

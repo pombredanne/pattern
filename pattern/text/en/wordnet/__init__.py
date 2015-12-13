@@ -24,13 +24,14 @@ import glob
 from math import log
 
 try: 
-    MODULE = os.path.dirname(os.path.abspath(__file__))
+    MODULE = os.path.dirname(os.path.realpath(__file__))
 except:
     MODULE = ""
 
 # Path to WordNet /dict folder.
 CORPUS = ""
 os.environ["WNHOME"] = os.path.join(MODULE, CORPUS)
+os.environ["WNSEARCHDIR"] = os.path.join(MODULE, CORPUS, "dict")
 
 from pywordnet import wordnet as wn
 from pywordnet import wntools
@@ -105,7 +106,7 @@ def synsets(word, pos=NOUN):
         elif pos.startswith(ADVERB.lower()):
             w = wn.ADV[word]
         else:
-            raise TypeError, "part of speech must be NOUN, VERB, ADJECTIVE or ADVERB, not %s" % repr(pos)
+            raise TypeError("part of speech must be NOUN, VERB, ADJECTIVE or ADVERB, not %s" % repr(pos))
         return [Synset(s.synset) for i, s in enumerate(w)]
     except KeyError:
         return []
@@ -272,6 +273,8 @@ class Synset(object):
             lin = 2.0 * log(lcs(self, synset).ic) / (log(self.ic * synset.ic) or 1)
         except OverflowError:
             lin = 0.0
+        except ValueError: # / log(0)
+            lin = 0.0
         return abs(lin)
         
     @property
@@ -388,7 +391,7 @@ class SentiWordNet(Sentiment):
             glob.glob(os.path.join(MODULE, self.path)) + \
             glob.glob(os.path.join(MODULE, "..", self.path)))[0]
         except IndexError:
-            raise ImportError, "can't find SentiWordnet data file"
+            raise ImportError("can't find SentiWordnet data file")
         # Map synset id: a-00193480" => (193480, JJ).
         # Map synset id's to WordNet2 if VERSION == 2:
         if int(float(VERSION)) == 3:

@@ -47,7 +47,8 @@ window.height = function() {
 };
 
 /*##################################################################################################*/
-// Custom Array functions.
+
+/*--- ARRAY FUNCTIONS ------------------------------------------------------------------------------*/
 
 // JavaScript Array object:
 // var a = [1,2,3];
@@ -68,17 +69,9 @@ Array.instanceof = function(array) {
     return Object.prototype.toString.call(Array) === "[object Array]";
 };
 
-Array.min = function(array) {
-    return Math.min.apply(Math, array);
-};
-
-Array.max = function(array) {
-    return Math.max.apply(Math, array);
-};
-
-Array.sum = function(array) {
-    for (var i=0, sum=0; i < array.length; sum+=array[i++]){}; return sum;
-};
+Array.get = function(array, index) {
+    return (index >= 0)? array[index] : array[array.length+index];
+}
 
 Array.index = function(array, v) {
     for (var i=0; i < array.length; i++) { if (array[i] === v) return i; }
@@ -92,6 +85,28 @@ Array.contains = function(array, v) {
 
 Array.find = function(array, match) {
     for (var i=0; i < array.length; i++) { if (match(array[i])) return i; }
+};
+
+Array.sum = function(array) {
+    for (var i=0, sum=0; i < array.length; sum+=array[i++]){}; return sum;
+};
+
+Array.min = function(array, callback) {
+    callback = callback || function(x) { return x; }
+    var x = +Infinity;
+    for (var i=0; i < array.length; i++) { 
+        x = Math.min(x, callback(array[i])); 
+    }
+    return x;
+};
+
+Array.max = function(array, callback) {
+    callback = callback || function(x) { return x; }
+    var x = -Infinity;
+    for (var i=0; i < array.length; i++) { 
+        x = Math.max(x, callback(array[i])); 
+    }
+    return x;
 };
 
 Array.map = function(array, callback) {
@@ -123,6 +138,15 @@ Array.enumerate = function(array, callback, that) {
     }
 };
 
+Array.forEach = function(array, callback, that) {
+    /* Calls callback(value, index, array) for each value in the given array.
+     */
+    callback = Function.closure(that || this, callback);
+    for (var i=0; i < array.length; i++) {
+        if (callback(array[i]) == false, i, array) return;
+    }
+}
+
 Array.eq = function(array1, array2) {
     /* Returns true if both arrays contain the same values.
      */
@@ -134,13 +158,18 @@ Array.eq = function(array1, array2) {
 		if (array1[i] !== array2[i]) return false;
 	}
 	return true;
-}
+};
 
-Array.sorted = function(array, reverse) {
+Array.sorted = function(array, reverse, key) {
     /* Returns a sorted copy of the given array.
      */
+    if (key instanceof Function) {
+        var cmp = function(a, b) { return key(b) - key(a); }
+    } else {
+        var cmp = undefined
+    }
     array = array.slice();
-    array = array.sort();
+    array = array.sort(cmp);
     if (reverse) array = array.reverse();
     return array;
 };
@@ -151,9 +180,9 @@ Array.reversed = function(array) {
     array = array.slice();
     array = array.reverse();
     return array;
-}
+};
 
-Array.unique = function(array) {
+Array.unique = function (array) {
     /* Returns a new array with unique items.
      */
     var a = array.slice();
@@ -164,7 +193,7 @@ Array.unique = function(array) {
         }
     }
     return a;
-}
+};
 
 Array.choice = function(array) {
     /* Returns a random value from the given array (undefined if empty).
@@ -186,6 +215,12 @@ Array.shuffle = function(array) {
     return array;
 };
 
+Array.shuffled = function(array) {
+	/* Returns a new array with randomly shuffled values.
+	 */
+	return Array.shuffle(array.slice());
+};
+
 Array.range = function(i, j) {
     /* Returns a new array with numeric values from i to j (not including j).
      */
@@ -200,8 +235,94 @@ Array.range = function(i, j) {
     return a;
 };
 
-function len(array) {
+Array.len = function(array) {
     return array.length;
+};
+
+// Since version 1.5:
+
+var sum       = Array.sum;
+var map       = Array.map;
+var filter    = Array.filter;
+var enumerate = Array.enumerate;
+var sorted    = Array.sorted;
+var reversed  = Array.reversed;
+var unique    = Array.unique;
+var shuffled  = Array.shuffled;
+var choice    = Array.choice;
+var range     = Array.range;
+var len       = Array.len;
+
+/*--- ARRAY EXTENSIONS -----------------------------------------------------------------------------*/
+
+if (Array.isArray === undefined) {
+	Array.isArray = Array.instanceof;
+}
+
+if (!Array.prototype.get) {
+	 Array.prototype.get = function(i) {
+		return Array.get(this, i);
+	 }
+}
+
+if (!Array.prototype.index) {
+	 Array.prototype.index = function(v) {
+		return Array.index(this, v);
+	 };
+}
+
+if (!Array.prototype.contains) {
+	 Array.prototype.contains = function(v) {
+		return Array.contains(this, v);
+	};
+}
+
+if (!Array.prototype.find) {
+	 Array.prototype.find = function(match) {
+		return Array.find(this, match);
+	 };
+}
+
+if (!Array.prototype.min) {
+	 Array.prototype.min = function(callback) {
+		return Array.min(this, callback);
+	 };
+}
+
+if (!Array.prototype.max) {
+	 Array.prototype.max = function(callback) {
+		return Array.max(this, callback);
+	 };
+}
+
+if (!Array.prototype.map) {
+	 Array.prototype.map = function(callback) {
+		return Array.map(this, callback);
+	 };
+}
+
+if (!Array.prototype.filter) {
+	 Array.prototype.filter = function(callback) {
+		return Array.filter(this, callback);
+	 };
+}
+
+if (!Array.prototype.forEach) {
+	 Array.prototype.forEach = function(callback, that) {
+		return Array.forEach(this, callback, that);
+	 };
+}
+
+if (!Array.prototype.eq) {
+	 Array.prototype.eq = function(array) {
+		return Array.eq(this, array);
+	 };
+}
+
+if (!Array.prototype.shuffle) {
+	 Array.prototype.shuffle = function() {
+		return Array.shuffle(this);
+	 };
 }
 
 /*##################################################################################################*/
@@ -263,9 +384,17 @@ function len(array) {
 
 /*##################################################################################################*/
 
-/*--- GEOMETRY -------------------------------------------------------------------------------------*/
+/*--- MATH -----------------------------------------------------------------------------------------*/
 
 var PI = Math.PI;
+
+Math.degrees = function(radians) {
+    return radians * 180 / Math.PI;
+};
+
+Math.radians = function(degrees) {
+    return degrees / 180 * Math.PI;
+};
 
 Math._round = Math.round;
 Math.round = function(x, decimals) {
@@ -276,19 +405,15 @@ Math.round = function(x, decimals) {
     }
 };
 
+Math.mod = function(a, b) {
+    return ((a % b) + b) % b;
+};
+
 Math.sign = function(x) {
-    if (x < 0) { return -1; }
-    if (x > 0) { return +1; }
+    if (x < 0) return -1;
+    if (x > 0) return +1;
     return 0;
 }
-
-Math.degrees = function(radians) {
-    return radians * 180 / Math.PI;
-};
-
-Math.radians = function(degrees) {
-    return degrees / 180 * Math.PI;
-};
 
 Math.clamp = function(value, min, max) {
     if (max > min) {
@@ -296,6 +421,16 @@ Math.clamp = function(value, min, max) {
     } else {
         return Math.max(max, Math.min(value, min));
     }
+};
+
+Math.normalize = function(value, min, max) {
+    return (value - min) / (max - min);
+}
+
+Math.sum = function(a) {
+    var n = 0;
+    for (var i=0; i < a.length; i++) n += a[i];
+    return n;
 };
 
 Math.dot = function(a, b) {
@@ -310,6 +445,55 @@ Math.mix = function(a, b, t) {
     if (t > 1.0) return b;
     return a + (b-a)*t;
 };
+
+Math.lerp = Math.mix;
+
+Math.smoothstep = function(a, b, x) {
+    if (x < a) return 0.0;
+    if (x >=b) return 1.0;
+    x = (x-a) / (b-a);
+    return x*x * (3-2*x);
+};
+
+Math.smoothrange = function(a, b, n) {
+    /* Returns an array of approximately n values v1, v2, ... vn,
+     * so that v1 <= a, and vn >= b, and all values are multiples of 1, 2, 5 and 10.
+     * For example: Math.smoothrange(1, 123) => [0, 20, 40, 60, 80, 100, 120, 140],
+     */
+    function _multiple(v, round) {
+        var e = Math.floor(Math.log(v) / Math.LN10); // exponent
+        var m = Math.pow(10, e);                     // magnitude
+        var f = v / m;                               // fraction
+        if (round) {
+            if (f <  1.5) return m * 1;
+            if (f <  3.0) return m * 2;
+            if (f <  7.0) return m * 5;
+        } else {
+            if (f <= 1.0) return m * 1;
+            if (f <= 2.0) return m * 2;
+            if (f <= 5.0) return m * 5; 
+        }
+        return m * 10;
+    }
+    if (a === undefined && b === undefined) { a=0; b=1; }
+    if (a === undefined) { a=0; b=b; }
+    if (b === undefined) { a=0; b=a; }
+    if (n === undefined) { n=10; }
+    if (a === b) {
+        return [a];
+    }
+    var r = _multiple(b-a);
+    var t = _multiple(r / (n-1), true);
+    a = Math.floor(a/t) * t;
+    b = Math.ceil( b/t) * t;
+    var rng = [];
+    for (var i=0; i < (b-a) / t + 1; i++) {
+        rng.push(a + i*t);
+    }
+    return rng;
+};
+
+/*--- GEOMETRY -------------------------------------------------------------------------------------*/
 
 var Point = Class.extend({
     init: function(x, y) {
@@ -422,9 +606,9 @@ var Geometry = Class.extend({
         if (infinite === undefined) infinite = false;
         var ua = (x4-x3) * (y1-y3) - (y4-y3) * (x1-x3);
         var ub = (x2-x1) * (y1-y3) - (y2-y1) * (x1-x3);
-        var d  = (y4-y3) * (x2-x1) - (x4-x3) * (y2-y1);        
+        var d  = (y4-y3) * (x2-x1) - (x4-x3) * (y2-y1);
         // The lines are coincident if (ua == ub && ub == 0).
-        // The lines are parallel otherwise.        
+        // The lines are parallel otherwise.
         if (d == 0) return null;
         ua /= d;
         ub /= d;
@@ -536,6 +720,11 @@ var Geometry = Class.extend({
 });
 
 var geometry = new Geometry();
+var geo = geometry;
+
+Math.angle = geometry.angle;
+Math.distance = geometry.distance;
+Math.coordinates = geometry.coordinates;
 
 /*##################################################################################################*/
 
@@ -543,6 +732,7 @@ var geometry = new Geometry();
 
 var RGB = "RGB";
 var HSB = "HSB";
+var HCL = "HCL";
 var HEX = "HEX";
 
 var Color = Class.extend({
@@ -554,12 +744,17 @@ var Color = Class.extend({
          * two parameters (grayscale and alpha) or one parameter (grayscale or Color object).
          * An optional {base: 1.0, colorspace: RGB} can be used with four parameters.
          */
-        // One value, another color object.
-        if (r instanceof Color) {
+        var base = options && options.base || 1.0;
+        var colorspace = options && options.colorspace || RGB;
+        // One value, a hexadecimal string.
+		if (r && r.match && r.match(/^#/)) {
+			colorspace = HEX;
+		// One value, another color object.
+		} else if (r instanceof Color) {
             g=r.g; b=r.b; a=r.a; r=r.r;
         // One value, array with R,G,B,A values.
         } else if (r instanceof Array) {
-            g=r[1]; b=r[2]; a=r[3]||1; r=r[0];
+            g=r[1]; b=r[2]; a=r[3] !== undefined ? r[3] : 1; r=r[0];
         // No value or null, transparent black.
         } else if (r === undefined || r == null) {
             r=0; g=0; b=0; a=0;
@@ -573,25 +768,37 @@ var Color = Class.extend({
         } else if (a === undefined || a == null) {
             a=1;
         }
-        if (options) {
-            // Transform to base 1:
-            if (options.base !== undefined) {
-                r/=options.base; g/=options.base; b/=options.base; a/=options.base;
-            }
-            // Transform to color space RGB:
-            if (options.colorspace == HSB) {
-                var rgb = _hsb2rgb(r, g, b); r=rgb[0]; g=rgb[1]; b=rgb[2];
-            }
-            // Transform to color space HEX:
-            if (options.colorspace == HEX) {
-                var rgb = _hex2rgb(r); r=rgb[0]; g=rgb[1]; b=rgb[2]; a=1;
-            }            
-        }
+		// Transform to base 1.
+		if (base != 1) {
+			r /= base;
+			g /= base;
+			b /= base;
+			a /= base;
+		}
+		// Transform to base (0.0-1.0).
+		if (colorspace != HEX) {
+			r = (r < 0)? 0 : (r > 1)? 1 : r;
+			g = (g < 0)? 0 : (g > 1)? 1 : g;
+			b = (b < 0)? 0 : (b > 1)? 1 : b;
+			a = (a < 0)? 0 : (a > 1)? 1 : a;
+		}
+		// Transform to RGB.
+		if (colorspace != RGB) {
+			if (colorspace == HEX) {
+				var rgb = _hex2rgb(r); r=rgb[0]; g=rgb[1]; b=rgb[2]; a=1;
+			}
+			if (colorspace == HSB) {
+				var rgb = _hsb2rgb(r, g, b); r=rgb[0]; g=rgb[1]; b=rgb[2];
+			}
+			if (colorspace == HCL) {
+				var rgb = _hcl2rgb(r, g, b); r=rgb[0]; g=rgb[1]; b=rgb[2];
+			}
+		}
         this.r = r;
         this.g = g;
         this.b = b;
         this.a = a;
-    },
+	},
 
     rgb: function() {
         return [this.r, this.g, this.b];
@@ -623,14 +830,20 @@ var Color = Class.extend({
         var g = this.g;
         var b = this.b;
         var a = this.a;
-        if (colorspace == HSB) {
-            rgb = _rgb2hsb(r, g, b); r=rgb[0]; g=rgb[1]; b=rgb[2];
-        }
         if (colorspace == HEX) {
             return _rgb2hex(r, g, b);
         }
+        if (colorspace == HSB) {
+            hsb = _rgb2hsb(r, g, b); r=hsb[0]; g=hsb[1]; b=hsb[2];
+        }
+        if (colorspace == HCL) {
+            hcl = _rgb2hcl(r, g, b); r=hcl[0]; g=hcl[1]; b=hcl[2];
+        }
+		if (colorspace == "premultiplied") {
+			rgb = _rgba2rgb(r, g, b, a); r=rgb[0]; g=rgb[1]; b=rgb[2]; a=1;
+		}
         if (base != 1) {
-            return [r*base, g*base, b*base, a*base];
+            return [r * base, g * base, b * base, a * base];
         }
         return [r, g, b, a];
     },
@@ -640,7 +853,7 @@ var Color = Class.extend({
          */
         var hsb = _rgb2hsb(this.r, this.g, this.b);
         var hsb = _rotateRYB(hsb[0], hsb[1], hsb[2], angle);
-        return new Color(hsb[0], hsb[1], hsb[2], this.a, {"colorspace":HSB});
+        return new Color(hsb[0], hsb[1], hsb[2], this.a, {"colorspace": HSB});
     },
     
     adjust: function(options) {
@@ -651,11 +864,25 @@ var Color = Class.extend({
         hsb[0] += options.hue || 0;
         hsb[1] *= options.saturation || 1;
         hsb[2] *= options.brightness || 1;
-        return new Color(hsb[0]%1, hsb[1], hsb[2], this.a, {"colorspace":HSB});
+        return new Color(Math.mod(hsb[0], 1), hsb[1], hsb[2], this.a, {"colorspace": HSB});
     }
 });
 
+function rgb(r, g, b) {
+	/* Returns a new Color from R, G, B values (0-255).
+	 */ 
+    return new Color(r, g, b, 1 * 255, {"base": 255, "colorspace": RGB});
+}
+
+function rgba(r, g, b, a) {
+	/* Returns a new Color from R, G, B values (0-255) and alpha (0.0-1.0).
+	 */ 
+    return new Color(r, g, b, a * 255, {"base": 255, "colorspace": RGB});
+}
+
 function color(r, g, b, a, options) {
+	/* Returns a new Color from R, G, B, A values (0.0-1.0).
+	 */ 
     return new Color(r, g, b, a, options);
 }
 
@@ -751,14 +978,17 @@ var lineCap = linecap;
 // This is the main reason that scripts will run (in overall) 2-8 fps slower than in processing.js.
 
 /*--- COLOR SPACE ----------------------------------------------------------------------------------*/
-// Transformations between RGB, HSB, HEX color spaces.
+// Transformations between RGB, HSB, XYZ, LAB, LCH, HEX color spaces.
 // Based on: http://www.easyrgb.com/math.php
 
 function _rgb2hex(r, g, b) {
-    /* Converts the given R,G,B values to a hexadecimal color string.
+    /* Returns a hexadecimal color string from the given R,G,B values.
      */
-    parseHex = function(i) { 
-        return ((i == 0)? "00" : (i.length < 2)? "0"+i : i).toString(16).toUpperCase(); 
+    parseHex = function(i) {
+        var s = "00";
+        s = (i != 0)? i.toString(16).toUpperCase() : s;
+        s = (s.length < 2)? "0" + s : s;
+        return s;
     }
     return "#"
         + parseHex(Math.round(r * 255)) 
@@ -767,7 +997,7 @@ function _rgb2hex(r, g, b) {
 }
 
 function _hex2rgb(hex) {
-    /* Converts the given hexadecimal color string to R,G,B (between 0.0-1.0).
+    /* Returns an array [R,G,B] (0.0-1.0) from the given hexadecimal color string.
      */
     hex = hex.replace(/^#/, "");
     if (hex.length < 6) { // hex += hex[-1] * (6-hex.length);
@@ -780,7 +1010,7 @@ function _hex2rgb(hex) {
 }
 
 function _rgb2hsb(r, g, b) {
-    /* Converts the given R,G,B values to H,S,B (between 0.0-1.0).
+    /* Returns an array [H,S,B] (0.0-1.0) from the given R,G,B values.
      */
     var h = 0;
     var s = 0;
@@ -794,17 +1024,17 @@ function _rgb2hsb(r, g, b) {
         else if (g == v) { h = 2 + (b-r) / d; } 
         else             { h = 4 + (r-g) / d; }
     }
-    h = h / 6.0 % 1;
+    h = Math.mod(h / 6.0, 1);
     return [h, s, v];
 }
 
 function _hsb2rgb(h, s, v) {
-    /* Converts the given H,S,B color values to R,G,B (between 0.0-1.0).
+    /* Returns an array [R,G,B] (0.0-1.0) from the given H,S,B values.
      */
     if (s == 0) {
         return [v, v, v];
     }
-    h = h % 1 * 6.0;
+    h = Math.mod(h, 1) * 6.0;
     var i = Math.floor(h);
     var f = h - i;
     var x = v * (1-s);
@@ -816,12 +1046,124 @@ function _hsb2rgb(h, s, v) {
     return [[v,z,x], [y,v,x], [x,v,z], [x,y,v], [z,x,v]][parseInt(i)];
 }
 
+function _rgb2xyz(r, g, b) {
+    /* Returns an array [X,Y,Z] (0-95.047, 0-100, 0-108.883) from the given R,G,B values.
+     */
+	r = ((r > 0.04045)? Math.pow((r + 0.055) / 1.055, 2.4) : r / 12.92) * 100;
+	g = ((g > 0.04045)? Math.pow((g + 0.055) / 1.055, 2.4) : g / 12.92) * 100;
+	b = ((b > 0.04045)? Math.pow((b + 0.055) / 1.055, 2.4) : b / 12.92) * 100;
+	// Observer = 2°, Illuminant = D65.
+	var x = r * 0.4124 + g * 0.3576 + b * 0.1805;
+	var y = r * 0.2126 + g * 0.7152 + b * 0.0722;
+	var z = r * 0.0193 + g * 0.1192 + b * 0.9505;
+	return [x, y, z];
+}
+
+function _xyz2rgb(x, y, z) {
+    /* Returns an array [R,G,B] (0.0-1.0) from the given X,Y,Z values.
+     */
+	x /= 100;
+	y /= 100;
+	z /= 100;
+	var r = x *  3.2406 + y * -1.5372 + z * -0.4986;
+	var g = x * -0.9689 + y *  1.8758 + z *  0.0415;
+	var b = x *  0.0557 + y * -0.2040 + z *  1.0570;
+	r = (r > 0.0031308)? 1.055 * Math.pow(r, 1 / 2.4) - 0.055 : 12.92 * r;
+	g = (g > 0.0031308)? 1.055 * Math.pow(g, 1 / 2.4) - 0.055 : 12.92 * g;
+	b = (b > 0.0031308)? 1.055 * Math.pow(b, 1 / 2.4) - 0.055 : 12.92 * b;
+	return [r, g, b];
+}
+
+function _xyz2lab(x, y, z) {
+    /* Returns an array [L,a,b] (0.0-1.0) from the given X,Y,Z values.
+     */
+	// Observer = 2°, Illuminant = D65.
+	x /=  95.047;
+	y /= 100.000;
+	z /= 108.883;
+	x = (x > 0.008856)? Math.pow(x, 1 / 3) : 7.787 * x + (16 / 116);
+	y = (y > 0.008856)? Math.pow(y, 1 / 3) : 7.787 * y + (16 / 116);
+	z = (z > 0.008856)? Math.pow(z, 1 / 3) : 7.787 * z + (16 / 116);
+	var l = 116 * y - 16;
+	var a = 500 * (x - y);
+	var b = 200 * (y - z);
+	return [l, a, b];
+}
+
+function _lab2xyz(l, a, b) {
+    /* Returns an array [X,Y,Z] (0-95.047, 0-100, 0-108.883) from the given L,a,b values.
+     */
+	var y = (l + 16 ) / 116;
+	var x = a / 500 + y;
+	var z = y - b / 200;
+	x = (Math.pow(x, 3) > 0.008856)? Math.pow(x, 3) : (x - 16 / 116) / 7.787;
+	y = (Math.pow(y, 3) > 0.008856)? Math.pow(y, 3) : (y - 16 / 116) / 7.787;
+	z = (Math.pow(z, 3) > 0.008856)? Math.pow(z, 3) : (z - 16 / 116) / 7.787;
+	// Observer = 2°, Illuminant = D65.
+	x *=  95.047;
+	y *= 100.000;
+	z *= 108.883;
+	return [x, y, z];
+}
+
+function _lab2lch(l, a, b) {
+    /* Returns an array [L,C,H] (0.0-1.0) from the given L,a,b values.
+     */
+	var h = Math.atan2(b, a);
+	h = (h > 0)? h / Math.PI * 180 : 360 - Math.abs(h) / Math.PI * 180;
+	c = Math.sqrt(a * a + b * b);
+	return [l, c, h];
+}
+
+function _lch2lab(l, c, h) {
+    /* Returns an array [L,a,b] (0.0-1.0) from the given L,C,H values.
+     */
+	h = h / 180 * Math.PI;
+	var a = Math.cos(h) * c;
+	var b = Math.sin(h) * c;
+	return [l, a, b];
+}
+
+function _rgb2hcl(r, g, b) {
+    /* Returns an array [H,C,L] (0.0-1.0) from the given R,G,B values.
+     */
+	var xyz = _rgb2xyz(r, g, b);
+	var lab = _xyz2lab(xyz[0], xyz[1], xyz[2]);
+	var lch = _lab2lch(lab[0], lab[1], lab[2]);
+	lch[0] /= 100;
+	lch[1] /= 100;
+	lch[2] /= 360;
+	return [lch[2], lch[1], lch[0]];
+}
+
+function _hcl2rgb(h, c, l) {
+    /* Returns an array [R,G,B] (0.0-1.0) from the given H,C,L values.
+     */
+	h *= 360;
+	c *= 100;
+	l *= 100;
+	var lab = _lch2lab(l, c, h);
+	var xyz = _lab2xyz(lab[0], lab[1], lab[2]);
+	return _xyz2rgb(xyz[0], xyz[1], xyz[2]);
+}
+
+function _rgba2rgb(r, g, b, a, blend) {
+    /* Returns an array [R,G,B,1] (0.0-1.0) from the given R,G,B,A values.
+     */
+    blend = blend || [1,1,1];
+    r = r * a + (1 - a) * blend[0];
+    g = g * a + (1 - a) * blend[1];
+    b = b * a + (1 - a) * blend[2];
+    a = 1;
+    return [r, g, b, a];
+}
+
 function darker(clr, step) {
     /* Returns a copy of the color with a darker brightness.
      */
     if (step === undefined) step = 0.2;
     var hsb = _rgb2hsb(clr.r, clr.g, clr.b);
-    var rgb = _hsb2rgb(hsb[0], hsb[1], Math.max(0, hsb[2]-step));
+    var rgb = _hsb2rgb(hsb[0], hsb[1], Math.max(0, hsb[2] - step));
     return new Color(rgb[0], rgb[1], rgb[2], clr.a);
 }
 
@@ -830,12 +1172,40 @@ function lighter(clr, step) {
      */
     if (step === undefined) step = 0.2;
     var hsb = _rgb2hsb(clr.r, clr.g, clr.b);
-    var rgb = _hsb2rgb(hsb[0], hsb[1], Math.min(1, hsb[2]+step));
+    var rgb = _hsb2rgb(hsb[0], hsb[1], Math.min(1, hsb[2] + step));
     return new Color(rgb[0], rgb[1], rgb[2], clr.a);
 }
     
 var darken  = darker;
 var lighten = lighter;
+
+/*--- COLOR INTERPOLATION --------------------------------------------------------------------------*/
+
+function colors(colors, k, colorspace) {
+	/* Returns a new array with k colors,
+	   by calculating intermediary colors in the given colorspace (by default, HCL).
+	 */
+	if (k === undefined) k = 100;
+	if (colorspace === undefined) colorspace = HCL;
+	var a = Array.map(colors, function(clr) { return clr.map({colorspace: colorspace}); });
+	var b = [];
+	var x, y, t, n = a.length - 1;
+	for (var i=0; i < k-1; i++) {
+		x = Math.min(Math.floor(i / k * n), n);
+		y = Math.min(x + 1, n);
+		t = (i - x * k / n) / (k / n);
+		b.push(new Color(
+			Math.lerp(a[x][0], a[y][0], t),
+			Math.lerp(a[x][1], a[y][1], t),
+			Math.lerp(a[x][2], a[y][2], t),
+			Math.lerp(a[x][3], a[y][3], t), {colorspace: colorspace}
+		));
+	}
+	if (k > 0) {
+		b.push(new Color(a[n][0], a[n][1], a[n][2], a[n][3], {colorspace: colorspace}));
+	}
+	return b;
+}
 
 /*--- COLOR ROTATION -------------------------------------------------------------------------------*/
 
@@ -858,7 +1228,7 @@ function _rotateRYB(h, s, b, angle) {
      * but focuses on aesthetically pleasing complementary colors.
      */
     if (angle === undefined) angle = 180;
-    h = h * 360 % 360;
+    h = Math.mod(h * 360, 360);
     // Find the location (angle) of the hue on the RYB color wheel.
     var x0, y0, x1, y1, a;
     var wheel = _COLORWHEEL;
@@ -866,17 +1236,17 @@ function _rotateRYB(h, s, b, angle) {
         x0 = wheel[i][0]; x1 = wheel[i+1][0];
         y0 = wheel[i][1]; y1 = wheel[i+1][1];
         if (y0 <= h && h <= y1) {
-            a = geometry.lerp(x0, x1, (h-y0) / (y1-y0));
+            a = Math.lerp(x0, x1, (h-y0) / (y1-y0));
             break;
         }
     }
     // Rotate the angle and retrieve the hue.
-    a = (a+angle) % 360;
+    a = Math.mod(a + angle, 360);
     for (var i=0; i < wheel.length-1; i++) {
         x0 = wheel[i][0]; x1 = wheel[i+1][0];
         y0 = wheel[i][1]; y1 = wheel[i+1][1];
         if (x0 <= a && a <= x1) {
-            h = geometry.lerp(y0, y1, (a-x0) / (x1-x0));
+            h = Math.lerp(y0, y1, (a-x0) / (x1-x0));
             break;
         }
     }
@@ -910,7 +1280,7 @@ function analog(clr, angle, d) {
 function _colorMixin(options) {
     var s = _ctx.state;
     var o = options;
-    if (options === undefined) {
+    if (o === undefined) {
         return [s.fill, s.stroke, s.strokewidth, s.strokestyle, s.linecap];
     } else {
         return [
@@ -956,7 +1326,7 @@ function _ctx_stroke(stroke, strokewidth, strokestyle, linecap) {
             switch(strokestyle) {
                 case DOTTED: _ctx.setLineDash([1,3]); break;
                 case DASHED: _ctx.setLineDash([3,3]); break;
-                    default: _ctx.setLineDash(null);
+                    default: _ctx.setLineDash([]);
             }
         }
         _ctx.lineWidth = strokewidth;
@@ -991,7 +1361,7 @@ var Gradient = Class.extend({
         this.x = o.x || 0;
         this.y = o.y || 0;
         this.a = 1.0; // Shapes will only be drawn if color or gradient has alpha > 1.0.
-        this.spread = (o.spread !== undefined)? o.spread : 100;
+        this.spread = Math.max((o.spread !== undefined)? o.spread : 100, 0);
         this.angle = o.angle || 0;
     },
     
@@ -1017,8 +1387,8 @@ var Gradient = Class.extend({
     }
 });
 
-function gradient(clr1, clr2, type, dx, dy, length, angle) {
-    return new Gradient(clr1, clr2, type, dx, dy, length, angle);
+function gradient(clr1, clr2, options) {
+    return new Gradient(clr1, clr2, options);
 }
 
 /*--- SHADOW ---------------------------------------------------------------------------------------*/
@@ -1128,7 +1498,7 @@ var AffineTransform = Transform = Class.extend({
     },
     
     rotation: function() {
-        return (Math.degrees(Math.atan2(this.matrix[1], this.matrix[0])) + 360) % 360;
+        return Math.mod(Math.degrees(Math.atan2(this.matrix[1], this.matrix[0])) + 360, 360);
     },
 
     
@@ -1177,6 +1547,12 @@ var AffineTransform = Transform = Class.extend({
     transformPath: function(path) {
         return this.transform_path(path);
     },
+	
+	transform: function(path_x, y) {
+		return (path_x instanceof Path)?
+			this.transform_path(path_x) :
+			this.transform_point(path_x, y);
+	},
     
     map: function(points) {
         return Array.map(points, function(pt) {
@@ -1418,6 +1794,8 @@ var Bezier = Class.extend({
     },
     
     findPath: function(points, curvature) {
+        /* Returns a smooth Path from the given list of points.
+         */
         if (curvature === undefined) curvature = 1.0;
         // Don't crash on something straightforward such as a list of [x,y]-arrays.
         if (points instanceof Path) {
@@ -1485,10 +1863,53 @@ var Bezier = Class.extend({
             );
         }
         return path;
+    },
+    
+    arc: function(x1, y1, x2, y2, angle, extent) {
+        /* Returns a list of [x1, y1, x2, y2, x3, y3, x4, y4] coordinates,
+         * each a curve from (x1, x1) to (x4, y4) with (x2, y2) and (x3, y3)
+         * as their respective Bezier control points.
+         */
+        angle = -angle; extent = -extent; // clockwise
+        var bounds = [x1, y1, x2, y2];
+        x1 = Math.min(bounds[0], bounds[2]);
+        y1 = Math.min(bounds[1], bounds[3]);
+        x2 = Math.max(bounds[0], bounds[2]);
+        y2 = Math.max(bounds[1], bounds[3]);
+        extent = Math.min(Math.max(extent, -360), +360);
+        var n = Math.abs(extent) <= 90 && 1 || Math.ceil(Math.abs(extent) / 90.0);
+        var a = extent / n;
+        var cx = (x1 + x2) / 2;
+        var cy = (y1 + y2) / 2;
+        var rx = (x2 - x1) / 2;
+        var ry = (y2 - y1) / 2;
+        var a2 = Math.radians(a) / 2;
+        var kappa = Math.abs(4.0 / 3 * (1 - Math.cos(a2)) / Math.sin(a2));
+        var points = [], theta0, theta1, c0, c1, s0, s1, k;
+        for (var i=0; i < n; i++) {
+            theta0 = Math.radians(angle + (i+0) * a);
+            theta1 = Math.radians(angle + (i+1) * a);
+            c0 = Math.cos(theta0);
+            s0 = Math.sin(theta0);
+            c1 = Math.cos(theta1);
+            s1 = Math.sin(theta1);
+            k = a > 0 && -kappa || kappa;
+            points.push([
+                cx + rx * c0,
+                cy - ry * s0,
+                cx + rx * (c0 + k * s0),
+                cy - ry * (s0 - k * c0),
+                cx + rx * (c1 - k * s1),
+                cy - ry * (s1 + k * c1),
+                cx + rx * c1,
+                cy - ry * s1
+            ]);
+        }
+        return points	
     }
 });
 
-bezier = new Bezier();
+_bezier = new Bezier();
 
 /*--- BEZIER PATH ----------------------------------------------------------------------------------*/
 // A Path class with lineto(), curveto() and moveto() methods.
@@ -1642,7 +2063,29 @@ var Path = BezierPath = Class.extend({
         this.curveto(x0-dx, y1, x, y0+dy, x, y0);
         this.closepath();
     },
-
+    
+    arc: function(x, y, radius, angle1, angle2, options) {
+        /* Adds an arc to the path,
+         * clockwise from angle1 to angle2 along circle (x, y, radius).
+         */
+        var a1 = angle1 % 360;
+        var a2 = angle2;
+        if (a2 < a1) {
+            a2 = a2 + 360;
+        }
+        if (options && options.clockwise === false) {
+            a2 = a2 % 360 - 360;
+        }
+        var points = _bezier.arc(x-radius, y-radius, x+radius, y+radius, a1, a2-a1);
+        for (var i=0; i < points.length; i++) {
+            var pt = points[i];
+            if (i == 0) {
+                this.moveto(pt[0], pt[1]);
+            }
+            this.curveto(pt[2], pt[3], pt[4], pt[5], pt[6], pt[7]);
+        }
+    },
+    
 //  draw: function({fill: Color(), stroke: Color(), strokewidth: 1.0, strokestyle: SOLID})
     draw: function(options) {
         /* Draws the path.
@@ -1696,9 +2139,9 @@ var Path = BezierPath = Class.extend({
          */
         if (this._segments == null) {
             // Cache the segment lengths for performace.
-            this._segments = bezier.length(this, true, 10);
+            this._segments = _bezier.length(this, true, 10);
         }
-        return bezier.point(this, t, this._segments);
+        return _bezier.point(this, t, this._segments);
     },
     
     points: function(amount, options) {
@@ -1708,7 +2151,7 @@ var Path = BezierPath = Class.extend({
         var start = (options && options.start !== undefined)? options.start : 0.0;
         var end = (options && options.end !== undefined)? options.end : 1.0;
         if (this.array.length == 0) {
-            // Otherwise bezier.point() will raise an error for empty paths.
+            // Otherwise Bezier.point() will raise an error for empty paths.
             return [];
         }
         amount = Math.round(amount);
@@ -1728,7 +2171,7 @@ var Path = BezierPath = Class.extend({
         /* Returns an approximation of the total length of the path.
          */
         if (precision === undefined) precision = 10;
-        return bezier.length(this, false, precision);
+        return _bezier.length(this, false, precision);
     },
     
     contains: function(x, y, precision) {
@@ -1810,7 +2253,7 @@ function endpath(options) {
 function findpath(points, curvature) {
     /* Returns a smooth BezierPath from the given list of points.
      */
-    return bezier.findPath(points, curvature);
+    return _bezier.findPath(points, curvature);
 }
 
 var drawPath = drawpath;
@@ -1939,7 +2382,6 @@ function line(x0, y0, x1, y1, options) {
     /* Draws a straight line from x0, y0 to x1, y1. 
      * The current stroke, strokewidth and strokestyle are applied.
      */
-    // It is faster to do it directly without creating a Path:
     var a = _colorMixin(options);
     if (a[1] && a[1].a > 0) {
         _ctx.beginPath();
@@ -1949,11 +2391,24 @@ function line(x0, y0, x1, y1, options) {
     }
 }
 
+function arc(x, y, radius, angle1, angle2, options) {
+    /* Draws an arc with the center at x, y, clockwise from angle1 to angle2.
+     * The current stroke, strokewidth and strokestyle are applied.
+     */
+    var a = _colorMixin(options);
+    if (a[0] && a[0].a > 0 || a[1] && a[1].a > 0) {
+        var a1 = Math.radians(angle1);
+        var a2 = Math.radians(angle2);
+        _ctx.beginPath();
+        _ctx.arc(x, y, radius, a1, a2, (options && options.clockwise === false));
+        _ctx_stroke(a[1], a[2], a[3], a[4]);
+    }
+}
+
 function rect(x, y, width, height, options) {
     /* Draws a rectangle with the top left corner at x, y.
      * The current stroke, strokewidth, strokestyle and fill color are applied.
      */
-    // It is faster to do it directly without creating a Path:
     var a = _colorMixin(options);
     if (a[0] && a[0].a > 0 || a[1] && a[1].a > 0) {
         if (!options || options.roundness === undefined) {
@@ -2023,13 +2478,37 @@ function star(x, y, points, outer, inner, options) {
     if (inner === undefined) inner = 50;
     var p = new Path();
     p.moveto(x, y+outer);
-    for (var i=0; i < 2*points+1; i++) {
-        var r = (i%2 == 0)? outer : inner;
-        var a = Math.PI * i/points;
-        p.lineto(x + r*Math.sin(a), y + r*Math.cos(a));
+    for (var i=0; i < 2 * points + 1; i++) {
+        var r = (i % 2 == 0)? outer : inner;
+        var a = Math.PI * i / points;
+        p.lineto(
+            x + r * Math.sin(a), 
+            y + r * Math.cos(a)
+        );
     };
     p.closepath();
     p.draw(options);
+}
+
+// To draw crisp lines, you can use translate(0, 0.5) + line0().
+// We call it "0" because floats are rounded to nearest int.
+
+function line0(x1, y1, x2, y2, options) {
+    line(
+        Math.round(x1), 
+        Math.round(y1), 
+        Math.round(x2), 
+        Math.round(y2), options
+    );
+}
+
+function rect0(x, y, width, height, options) {
+    rect(
+        Math.round(x), 
+        Math.round(y), 
+        Math.round(width), 
+        Math.round(height), options
+    );
 }
 
 /*##################################################################################################*/
@@ -2166,7 +2645,7 @@ var Cache = Class.extend({
 });
 
 // Global cache:
-cache = new Cache();
+var _cache = new Cache();
 
 /*--- INCLUDE --------------------------------------------------------------------------------------*/
 
@@ -2174,8 +2653,10 @@ function include(url) {
     /* Imports the given JavaScript library,
      * from a local path (e.g., "graph.js") or a remote URL (e.g., "http://domain.com/graph.js").
      */
-    cache.script(url);
+    _cache.script(url);
 }
+
+var require = require || include;
 
 /*--- ASYNCHRONOUS REQUEST -------------------------------------------------------------------------*/
 
@@ -2225,7 +2706,7 @@ var Image = Class.extend({
          */
         var o = options || {};
         this._url = url;
-        this._img = cache.image(url);
+        this._img = _cache.image(url);
         this.x = o.x || 0;
         this.y = o.y || 0;
         this.width = (o.width !== undefined)? o.width : null;
@@ -2443,7 +2924,7 @@ function _ctx_font(fontname, fontsize, fontweight) {
     if (fontweight.length > ITALIC.length && fontweight == BOLD+ITALIC || fontweight == ITALIC+BOLD) {
         fontweight = ITALIC + " " + BOLD;
     }
-    _ctx.font = fontweight + " " + fontsize + "px " + fontname;
+    _ctx.font = fontweight + " " + fontsize + "pt " + fontname;
 }
 
 function str(v) {
@@ -2766,7 +3247,7 @@ window._clearFrame = function(id) {
 // It is the Canvas that was last created, OR
 // it is the Canvas that is preparing to call Canvas.draw(), OR
 // it is the Buffer that has called Buffer.push().
-_ctx = null;
+var _ctx = null;
 
 var G_vmlCanvasManager; // Needed with excanvas.js
 
@@ -2943,7 +3424,7 @@ var Canvas = Class.extend({
         // Delay Canvas.draw() until the cached images are done loading
         // (for example, Image objects created during Canvas.setup()).
         var _preload = function() {
-            if (cache.busy > 0) { setTimeout(Function.closure(this, _preload), 10); return; }
+            if (_cache.busy > 0) { setTimeout(Function.closure(this, _preload), 10); return; }
             this._draw(); 
         }
         _preload.apply(this);
@@ -3143,7 +3624,7 @@ function adjust(img, options) {
     var adjust_hue = function(pixels, m) {
         pixels.map(function(p) {
             var hsb = _rgb2hsb(p[0]/255, p[1]/255, p[2]/255);
-            var rgb = _hsb2rgb(Math.clamp((hsb[0] + m) % 1, 0, 1), hsb[1], hsb[2]);
+            var rgb = _hsb2rgb(Math.clamp(Math.mod(hsb[0] + m, 1), 0, 1), hsb[1], hsb[2]);
             return [rgb[0]*255, rgb[1]*255, rgb[2]*255, p[3]]; 
         });
     }
@@ -3282,17 +3763,17 @@ function blend(mode, img1, img2, dx, dy, alpha) {
             var b = 255 - 2 * (255-x) * (255-y) / 255;
             return (luminance < 0.45)? a :
                    (luminance > 0.55)? b : 
-                    geometry.lerp(a, b, (luminance - 0.45) * 255); }; break;
+                    Math.lerp(a, b, (luminance - 0.45) * 255); }; break;
         default:
             op = function(x, y) { return 0; };
     }
     function mix(p1, p2, op, luminance) {
         var p = [0,0,0,0];
         var a = p2[3] / 255 * alpha;
-        p[0] = geometry.lerp(p1[0], op(p1[0], p2[0], luminance), a);
-        p[1] = geometry.lerp(p1[1], op(p1[1], p2[1], luminance), a);
-        p[2] = geometry.lerp(p1[2], op(p1[2], p2[2], luminance), a);
-        p[3] = geometry.lerp(p1[3], 255, a);
+        p[0] = Math.lerp(p1[0], op(p1[0], p2[0], luminance), a);
+        p[1] = Math.lerp(p1[1], op(p1[1], p2[1], luminance), a);
+        p[2] = Math.lerp(p1[2], op(p1[2], p2[2], luminance), a);
+        p[3] = Math.lerp(p1[3], 255, a);
         return p;
     }
     // Some blend modes swap opaque blend (alpha=255) with base layer to mimic Photoshop.
@@ -3616,26 +4097,27 @@ function widget(canvas, variable, type, options) {
 /*--- <SCRIPT TYPE="TEXT/CANVAS"> ------------------------------------------------------------------*/
 
 attachEvent(window, "load", function() {
-    /* Initializes <script type="text/canvas"> elements during window.onload().
-     * Optional arguments include: canvas="id" (<canvas> to use), and loop="false" (single frame).
+    /* Initializes <script class="canvas"> elements during window.onload().
+     * Optional arguments: width, height, target="id" (<canvas> to use), loop="false" (static).
      */
     this.e = document.getElementsByTagName("script");
     for (this.i=0; this.i < this.e.length; this.i++) {
         var i = this.i; // e and i may not be set by globals in eval().
         var e = this.e;
-        if (e[i].type == "text/canvas") {
-            var canvas = e[i].getAttribute("canvas");
+        if (e[i].className == "canvas" || e[i].type == "text/canvas") {
+            var canvas = e[i].getAttribute("target") || 
+                         e[i].getAttribute("canvas");
             if (canvas) {
-                // <script type="text/canvas" canvas="id">
+                // <script type="canvas" target="id">
                 // Render in the <canvas> with the given id.
                 canvas = document.getElementById(canvas);
             } else {
-                // <script type="text/canvas">
+                // <script class="canvas">
                 // Create a new <canvas class="canvas"> element.
                 canvas = document.createElement("canvas");
                 canvas.className = "canvas";
-                canvas.width = 500;
-                canvas.height = 500;
+                canvas.width  = parseInt(e[i].getAttribute("width")  || 500);
+                canvas.height = parseInt(e[i].getAttribute("height") || 500);
                 // Add the new <canvas> to the DOM before the <script> element.
                 // If the <script> is in the <head>, add it to the end of the document.
                 if (e[i].parentNode == document.getElementsByTagName("head")[0]) {
@@ -3646,8 +4128,8 @@ attachEvent(window, "load", function() {
             }
             // Evaluate the script and bind setup() and draw() to the canvas.
             var setup = function(){};
-            var draw = function(){};
-            var stop = function(){};
+            var draw  = function(){};
+            var stop  = function(){};
             eval(e[i].innerHTML);
             canvas = new Canvas(canvas);
             canvas.draw  = draw;
@@ -3655,7 +4137,7 @@ attachEvent(window, "load", function() {
             canvas.stop  = function() { 
                 stop(this); this._stop();
             }
-            // <script type="text/canvas" loop="false"> renders a single frame.
+            // <script class="canvas" loop="false"> renders a single frame.
             if (e[i].getAttribute("loop") == "false") {
                 canvas.step();
             } else {

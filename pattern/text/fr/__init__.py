@@ -13,7 +13,7 @@ import os
 import sys
 
 try:
-    MODULE = os.path.dirname(os.path.abspath(__file__))
+    MODULE = os.path.dirname(os.path.realpath(__file__))
 except:
     MODULE = ""
 
@@ -40,6 +40,10 @@ from pattern.text import (
     Sentiment as _Sentiment,
     NOUN, VERB, ADJECTIVE, ADVERB,
     MOOD, IRONY
+)
+# Import spelling base class.
+from pattern.text import (
+    Spelling
 )
 # Import verb tenses.
 from pattern.text import (
@@ -167,7 +171,8 @@ class Sentiment(_Sentiment):
                         self.annotate(w, pos, p, s, i)
 
 parser = Parser(
-     lexicon = os.path.join(MODULE, "fr-lexicon.txt"), 
+     lexicon = os.path.join(MODULE, "fr-lexicon.txt"),
+   frequency = os.path.join(MODULE, "fr-frequency.txt"),
   morphology = os.path.join(MODULE, "fr-morphology.txt"), 
      context = os.path.join(MODULE, "fr-context.txt"),
      default = ("NN", "NNP", "CD"),
@@ -184,6 +189,10 @@ sentiment = Sentiment(
    modifier  = lambda w: w.endswith("ment"),
    tokenizer = parser.find_tokens,
     language = "fr"
+)
+
+spelling = Spelling(
+        path = os.path.join(MODULE, "fr-spelling.txt")
 )
 
 def tokenize(s, *args, **kwargs):
@@ -214,6 +223,20 @@ def tag(s, tokenize=True, encoding="utf-8", **kwargs):
         for token in sentence:
             tags.append((token[0], token[1]))
     return tags
+    
+def keywords(s, top=10, **kwargs):
+    """ Returns a sorted list of keywords in the given string.
+    """
+    return parser.find_keywords(s, **dict({
+        "frequency": parser.frequency,
+              "top": top,
+              "pos": ("NN",),
+           "ignore": ("rt",)}, **kwargs))
+
+def suggest(w):
+    """ Returns a list of (word, confidence)-tuples of spelling corrections.
+    """
+    return spelling.suggest(w)
 
 def polarity(s, **kwargs):
     """ Returns the sentence polarity (positive/negative) between -1.0 and 1.0.
@@ -224,7 +247,7 @@ def subjectivity(s, **kwargs):
     """ Returns the sentence subjectivity (objective/subjective) between 0.0 and 1.0.
     """
     return sentiment(s, **kwargs)[1]
-    
+
 def positive(s, threshold=0.1, **kwargs):
     """ Returns True if the given sentence has a positive sentiment (polarity >= threshold).
     """

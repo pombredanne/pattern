@@ -12,7 +12,7 @@ import os
 import sys
 
 try:
-    MODULE = os.path.dirname(os.path.abspath(__file__))
+    MODULE = os.path.dirname(os.path.realpath(__file__))
 except:
     MODULE = ""
 
@@ -33,6 +33,10 @@ from pattern.text import (
 from pattern.text.tree import (
     Tree, Text, Sentence, Slice, Chunk, PNPChunk, Chink, Word, table,
     SLASH, WORD, POS, CHUNK, PNP, REL, ANCHOR, LEMMA, AND, OR
+)
+# Import spelling base class.
+from pattern.text import (
+    Spelling
 )
 # Import verb tenses.
 from pattern.text import (
@@ -194,14 +198,19 @@ class Parser(_Parser):
         return _Parser.find_tags(self, tokens, **kwargs)
 
 parser = Parser(
-     lexicon = os.path.join(MODULE, "es-lexicon.txt"), 
-  morphology = os.path.join(MODULE, "es-morphology.txt"), 
+     lexicon = os.path.join(MODULE, "es-lexicon.txt"),
+   frequency = os.path.join(MODULE, "es-frequency.txt"),
+  morphology = os.path.join(MODULE, "es-morphology.txt"),
      context = os.path.join(MODULE, "es-context.txt"),
      default = ("NCS", "NP", "Z"),
     language = "es"
 )
 
 lexicon = parser.lexicon # Expose lexicon.
+
+spelling = Spelling(
+        path = os.path.join(MODULE, "es-spelling.txt")
+)
 
 def tokenize(s, *args, **kwargs):
     """ Returns a list of sentences, where punctuation marks have been split from words.
@@ -231,6 +240,20 @@ def tag(s, tokenize=True, encoding="utf-8", **kwargs):
         for token in sentence:
             tags.append((token[0], token[1]))
     return tags
+
+def keywords(s, top=10, **kwargs):
+    """ Returns a sorted list of keywords in the given string.
+    """
+    return parser.find_keywords(s, **dict({
+        "frequency": parser.frequency,
+              "top": top,
+              "pos": ("NN",),
+           "ignore": ("rt",)}, **kwargs))
+
+def suggest(w):
+    """ Returns a list of (word, confidence)-tuples of spelling corrections.
+    """
+    return spelling.suggest(w)
 
 split = tree # Backwards compatibility.
 

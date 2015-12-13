@@ -9,28 +9,43 @@
 
 import os
 import sys
+import inspect
 import warnings
 import re
-import htmlentitydefs
 import urllib
+import base64
 import csv as csvlib
 
-from cStringIO import StringIO
 from codecs    import BOM_UTF8
+from itertools import islice
 from datetime  import datetime, timedelta
+from calendar  import monthrange
 from time      import mktime, strftime
 from math      import sqrt
 from types     import GeneratorType
 
-try:
-    from email.utils import parsedate_tz, mktime_tz
+try: # Python 2.x vs 3.x
+    from cStringIO import StringIO
 except:
+    from io import BytesIO as StringIO
+
+try: # Python 2.x vs 3.x
+    import htmlentitydefs
+except:
+    from html import entities as htmlentitydefs
+
+try: # Python 2.4 vs 2.5+
     from email.Utils import parsedate_tz, mktime_tz
+except:
+    from email.utils import parsedate_tz, mktime_tz
     
 try: 
-    MODULE = os.path.dirname(os.path.abspath(__file__))
+    MODULE = os.path.dirname(os.path.realpath(__file__))
 except:
     MODULE = ""
+    
+if sys.version > "3":
+    long = int
 
 MYSQL  = "mysql"
 SQLITE = "sqlite"
@@ -53,12 +68,14 @@ def _import_db(engine=SQLITE):
             # Python 2.4 with pysqlite2
             import pysqlite2.dbapi2 as sqlite
 
-def find(match=lambda item: False, list=[]):
-    """ Returns the first item in the list for which match(item) is True.
+def pd(*args):
+    """ Returns the path to the parent directory of the script that calls pd() + given relative path.
+        For example, in this script: pd("..") => /usr/local/lib/python2.x/site-packages/pattern/db/..
     """
-    for item in list:
-        if match(item) is True: 
-            return item
+    f = inspect.currentframe()
+    f = inspect.getouterframes(f)[1][1]
+    f = f != "<stdin>" and f or os.getcwd()
+    return os.path.join(os.path.dirname(os.path.realpath(f)), *args)
 
 _sum = sum # pattern.db.sum() is also a column aggregate function.
 
@@ -70,17 +87,33 @@ NOW, YEAR = "now", datetime.now().year
 # http://docs.python.org/library/time.html#time.strftime
 DEFAULT_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 date_formats = [
-    DEFAULT_DATE_FORMAT,      # 2010-09-21 09:27:01  => SQLite + MySQL
-    "%Y-%m-%dT%H:%M:%SZ",     # 2010-09-20T09:27:01Z => Bing
-    "%Y-%m-%dT%H:%M:%S+0000", # 2010-09-20T09:27:01+0000 => Facebook
-    "%Y-%m-%d %H:%M",         # 2010-09-21 09:27
-    "%Y-%m-%d",               # 2010-09-21
-    "%d/%m/%Y",               # 21/09/2010
-    "%d %B %Y",               # 21 September 2010
-    "%B %d %Y",               # September 21 2010
-    "%B %d, %Y",              # September 21, 2010
+    DEFAULT_DATE_FORMAT,           # 2010-09-21 09:27:01  => SQLite + MySQL
+    "%Y-%m-%dT%H:%M:%SZ",          # 2010-09-20T09:27:01Z => Bing
+    "%a, %d %b %Y %H:%M:%S +0000", # Fri, 21 Sep 2010 09:27:01 +000 => Twitter
+    "%a %b %d %H:%M:%S +0000 %Y",  # Fri Sep 21 09:21:01 +0000 2010 => Twitter
+    "%Y-%m-%dT%H:%M:%S+0000",      # 2010-09-20T09:27:01+0000 => Facebook
+    "%Y-%m-%d %H:%M",              # 2010-09-21 09:27
+    "%Y-%m-%d",                    # 2010-09-21
+    "%d/%m/%Y",                    # 21/09/2010
+    "%d %B %Y",                    # 21 September 2010
+    "%B %d %Y",                    # September 21 2010
+    "%B %d, %Y",                   # September 21, 2010
 ]
 
+def _yyyywwd2yyyymmdd(year, week, weekday):
+    """ Returns (year, month, day) for given (year, week, weekday).
+    """
+    d = datetime(year, month=1, day=4) # 1st week contains January 4th.
+    d = d - timedelta(d.isoweekday()-1) + timedelta(days=weekday-1, weeks=week-1)
+    return (d.year, d.month, d.day)
+    
+def _strftime1900(d, format):
+    """ Returns the given date formatted as a string.
+    """
+    if d.year < 1900: # Python's strftime() doesn't handle year < 1900.
+        return strftime(format, (1900,) + d.timetuple()[1:]).replace("1900", str(d.year), 1)
+    return datetime.strftime(d, format)
+    
 class DateError(Exception):
     pass
 
@@ -112,29 +145,39 @@ class Date(datetime):
     def timestamp(self):
         return int(mktime(self.timetuple())) # Seconds elapsed since 1/1/1970.
     def strftime(self, format):
-        if self.year < 1900:
-            # Python's strftime() doesn't handle year < 1900:
-            return strftime(format, (1900,) + self.timetuple()[1:]).replace("1900", str(self.year), 1)
-        return datetime.strftime(self, format)
+        return _strftime1900(self, format)
     def copy(self):
         return date(self.timestamp)
     def __str__(self):
         return self.strftime(self.format)
     def __repr__(self):
         return "Date(%s)" % repr(self.__str__())
-    def __iadd__(self, time):
-        return self.__add__(time)
-    def __isub__(self, time):
-        return self.__sub__(time)
-    def __add__(self, time):
-        d = datetime.__add__(self, time)
+    def __iadd__(self, t):
+        return self.__add__(t)
+    def __isub__(self, t):
+        return self.__sub__(t)
+    def __add__(self, t):
+        d = self
+        if getattr(t, "years" , 0) \
+        or getattr(t, "months", 0):
+            # January 31 + 1 month = February 28.
+            y = (d.month + t.months - 1) // 12 + d.year + t.years
+            m = (d.month + t.months + 0)  % 12 or 12
+            r = monthrange(y, m)
+            d = date(y, m, min(d.day, r[1]), d.hour, d.minute, d.second, d.microsecond)
+        d = datetime.__add__(d, t)
         return date(d.year, d.month, d.day, d.hour, d.minute, d.second, d.microsecond, self.format)
-    def __sub__(self, time):
-        d = datetime.__sub__(self, time)
-        if isinstance(d, timedelta):
-            # Subtracting two dates returns a time().
-            return d
-        return date(d.year, d.month, d.day, d.hour, d.minute, d.second, d.microsecond, self.format)
+    def __sub__(self, t):
+        if isinstance(t, (Date, datetime)):
+            # Subtracting two dates returns a Time.
+            t = datetime.__sub__(self, t)
+            return Time(+t.days, +t.seconds, 
+                microseconds = +t.microseconds)
+        if isinstance(t, (Time, timedelta)):
+            return self + Time(-t.days, -t.seconds, 
+                microseconds = -t.microseconds,
+                      months = -getattr(t, "months", 0),
+                       years = -getattr(t, "years", 0))
 
 def date(*args, **kwargs):
     """ Returns a Date from the given parameters:
@@ -149,15 +192,34 @@ def date(*args, **kwargs):
     """
     d = None
     f = None
-    if len(args) == 0 or args[0] == NOW:
+    if len(args) == 0 \
+    and kwargs.get("year") is not None \
+    and kwargs.get("month") \
+    and kwargs.get("day"):
+        # Year, month, day.
+        d = Date(**kwargs)
+    elif kwargs.get("week"):
+        # Year, week, weekday.
+        f = kwargs.pop("format", None)
+        d = Date(*_yyyywwd2yyyymmdd(
+            kwargs.pop("year", args and args[0] or Date.now().year),
+            kwargs.pop("week"),
+            kwargs.pop("weekday", kwargs.pop("day", 1))), **kwargs)
+    elif len(args) == 0 or args[0] == NOW:
         # No parameters or one parameter NOW.
         d = Date.now()
+    elif len(args) == 1 \
+     and isinstance(args[0], (Date, datetime)):
+        # One parameter, a Date or datetime object.
+        d = Date.fromtimestamp(int(mktime(args[0].timetuple()))) 
+        d+= time(microseconds=args[0].microsecond)
     elif len(args) == 1 \
      and (isinstance(args[0], int) \
       or  isinstance(args[0], basestring) and args[0].isdigit()):
         # One parameter, an int or string timestamp.
         d = Date.fromtimestamp(int(args[0]))
-    elif len(args) == 1 and isinstance(args[0], basestring):
+    elif len(args) == 1 \
+     and isinstance(args[0], basestring):
         # One parameter, a date string for which we guess the input format (RFC2822 or known formats).
         try: d = Date.fromtimestamp(mktime_tz(parsedate_tz(args[0])))
         except:
@@ -166,8 +228,9 @@ def date(*args, **kwargs):
                 except:
                     pass
         if d is None:
-            raise DateError, "unknown date format for %s" % repr(args[0])
-    elif len(args) == 2 and isinstance(args[0], basestring):
+            raise DateError("unknown date format for %s" % repr(args[0]))
+    elif len(args) == 2 \
+     and isinstance(args[0], basestring):
         # Two parameters, a date string and an explicit input format.
         d = Date.strptime(args[0], args[1])
     elif len(args) >= 3:
@@ -175,18 +238,32 @@ def date(*args, **kwargs):
         f = kwargs.pop("format", None)
         d = Date(*args[:7], **kwargs)
     else:
-        raise DateError, "unknown date format"
-    d.format = kwargs.get("format") or len(args)>7 and args[7] or f or Date.format
+        raise DateError("unknown date format")
+    d.format = kwargs.get("format") or len(args) > 7 and args[7] or f or Date.format
     return d
 
+class Time(timedelta):
+    
+    def __new__(cls, *args, **kwargs):
+        """ A convenience wrapper for datetime.timedelta that handles months and years.
+        """
+        # Time.years
+        # Time.months
+        # Time.days
+        # Time.seconds
+        # Time.microseconds
+        y = kwargs.pop("years", 0)
+        m = kwargs.pop("months", 0)
+        t = timedelta.__new__(cls, *args, **kwargs)
+        setattr(t, "years", y)
+        setattr(t, "months", m)
+        return t
+
 def time(days=0, seconds=0, minutes=0, hours=0, **kwargs):
-    """ Returns a value that can be added to a Date object.
+    """ Returns a Time that can be added to a Date object.
+        Other parameters: microseconds, milliseconds, weeks, months, years.
     """
-    # Other parameters: microseconds, milliseconds, weeks.
-    # There is no months-parameter since months have a variable amount of days (28-31).
-    # To increase the month of a Date:
-    # Date(date.year, date.month+1, date.day, format=date.format)
-    return timedelta(days=days, seconds=seconds, minutes=minutes, hours=hours, **kwargs)
+    return Time(days=days, seconds=seconds, minutes=minutes, hours=hours, **kwargs)
 
 #### STRING FUNCTIONS ##############################################################################
 # Latin-1 (ISO-8859-1) encoding is identical to Windows-1252 except for the code points 128-159:
@@ -229,6 +306,40 @@ def string(value, default=""):
     if value is None or value == "": # Don't do value != None because this includes 0.
         return default
     return decode_utf8(value)
+
+class EncryptionError(Exception):
+    pass
+
+class DecryptionError(Exception):
+    pass
+
+def encrypt_string(s, key=""):
+    """ Returns the given string as an encrypted bytestring.
+    """
+    key += " "
+    s = encode_utf8(s)
+    a = []
+    for i in xrange(len(s)):
+        try: a.append(chr(ord(s[i]) + ord(key[i % len(key)]) % 256))
+        except:
+            raise EncryptionError()
+    s = "".join(a)
+    s = base64.urlsafe_b64encode(s)
+    return s
+    
+def decrypt_string(s, key=""):
+    """ Returns the given string as a decrypted Unicode string.
+    """
+    key += " "
+    s = base64.urlsafe_b64decode(s)
+    a = []
+    for i in xrange(len(s)):
+        try: a.append(chr(ord(s[i]) - ord(key[i % len(key)]) % 256))
+        except:
+            raise DecryptionError()
+    s = "".join(a)
+    s = decode_utf8(s)
+    return s
 
 RE_AMPERSAND = re.compile("\&(?!\#)")           # & not followed by #
 RE_UNICODE   = re.compile(r'&(#?)(x|X?)(\w+);') # &#201;
@@ -314,7 +425,30 @@ def _escape(value, quote=lambda string: "'%s'" % string.replace("'", "\\'")):
         return "'%s'" % value.escape()
     return value
 
+def cast(x, f, default=None):
+    """ Returns f(x) or default.
+    """
+    if f is str and isinstance(x, unicode):
+        return decode_utf8(x)
+    if f is bool and x in ("1", "True", "true"):
+        return True
+    if f is bool and x in ("0", "False", "false"):
+        return False
+    if f is int:
+        f = lambda x: int(round(float(x)))
+    try:
+        return f(x)
+    except:
+        return default
+
 #### LIST FUNCTIONS ################################################################################
+
+def find(match=lambda item: False, list=[]):
+    """ Returns the first item in the list for which match(item) is True.
+    """
+    for item in list:
+        if match(item) is True: 
+            return item
 
 def order(list, cmp=None, key=None, reverse=False):
     """ Returns a list of indices in the order as when the given list is sorted.
@@ -330,7 +464,7 @@ def order(list, cmp=None, key=None, reverse=False):
     else:
         f = lambda i, j: int(list[i] >= list[j]) * 2 - 1
     return sorted(range(len(list)), cmp=f, reverse=reverse)
-    
+
 _order = order
 
 def avg(list):
@@ -440,10 +574,10 @@ class Database(object):
             try: 
                 self._connection = MySQLdb.connect(self.host, self.username, self.password, self.name, port=self.port, use_unicode=unicode)
                 self._connection.autocommit(False)
-            except Exception, e:
+            except Exception as e:
                 # Create the database if it doesn't exist yet.
                 if "unknown database" not in str(e).lower():
-                    raise DatabaseConnectionError, e[1] # Wrong host, username and/or password.
+                    raise DatabaseConnectionError(e[1]) # Wrong host, username and/or password.
                 connection = MySQLdb.connect(self.host, self.username, self.password)
                 cursor = connection.cursor()
                 cursor.execute("create database if not exists `%s`;" % self.name)
@@ -479,8 +613,8 @@ class Database(object):
             self._connection.converter[type.TINY]       = bool
             self._connection.converter[type.TIMESTAMP]  = date
         if self.type == SQLITE:
-            sqlite.converters["TINYINT(1)"] = bool # See Binary() why this is necessary:
-            sqlite.converters["BLOB"]       = lambda data: str(data).decode("string-escape")
+            sqlite.converters["TINYINT(1)"] = lambda v: bool(int(v))
+            sqlite.converters["BLOB"]       = lambda v: str(v).decode("string-escape")
             sqlite.converters["TIMESTAMP"]  = date
             
     def disconnect(self):
@@ -504,7 +638,7 @@ class Database(object):
             return self.__dict__["tables"][k]
         if k in self.__dict__: 
             return self.__dict__[k]
-        raise AttributeError, "'Database' object has no attribute '%s'" % k
+        raise AttributeError("'Database' object has no attribute '%s'" % k)
 
     def __len__(self):
         return len(self.tables)
@@ -536,26 +670,29 @@ class Database(object):
         """ Executes the given SQL query and return an iterator over the rows.
             With commit=True, automatically commits insert/update/delete changes.
         """
-        class rowiterator:
-            def __init__(self, cursor):
-                self._cursor = cursor
-            def next(self):
-                return self.__iter__().next()
-            def __iter__(self):
-                for row in (hasattr(self._cursor, "__iter__") and self._cursor or self._cursor.fetchall()):
-                    yield row
-                self._cursor.close()
-            def __del__(self):
-                self._cursor.close()
         self._query = SQL
         if not SQL:
             return # MySQL doesn't like empty queries.
-        #print SQL
+        #print(SQL)
         cursor = self._connection.cursor()
         cursor.execute(SQL)
         if commit is not False:
             self._connection.commit()
-        return rowiterator(cursor)
+        return self.RowsIterator(cursor)
+        
+    class RowsIterator:
+        """ Iterator over the rows returned from Database.execute().
+        """
+        def __init__(self, cursor):
+            self._cursor = cursor
+        def next(self):
+            return next(self.__iter__())
+        def __iter__(self):
+            for row in (hasattr(self._cursor, "__iter__") and self._cursor or self._cursor.fetchall()):
+                yield row
+            self._cursor.close()
+        def __del__(self):
+            self._cursor.close()
         
     def commit(self):
         """ Commit all pending insert/update/delete changes.
@@ -616,7 +753,7 @@ class Database(object):
             The given list of fields must contain values returned from the field() function.
         """
         if table in self.tables:
-            raise TableError, "table '%s' already exists" % (self.name + "." + table)
+            raise TableError("table '%s' already exists" % (self.name + "." + table))
         if table.startswith(XML_HEADER):
             # From an XML-string generated with Table.xml.
             return parse_xml(self, table, 
@@ -828,7 +965,7 @@ class Table(object):
         def extend(self, fields):
             [self.append(f) for f in fields]
         def __setitem__(self, *args, **kwargs):
-            raise NotImplementedError, "Table.fields only supports append()"
+            raise NotImplementedError("Table.fields only supports append()")
         insert = remove = pop = __setitem__
     
     def __init__(self, name, database):
@@ -851,7 +988,7 @@ class Table(object):
         # The primary key column is stored in Table.primary_key.
         self.fields = Table.Fields(self)
         if self.name not in self.database.tables:
-            raise TableError, "table '%s' does not exist" % (self.database.name + "." + self.name)
+            raise TableError("table '%s' does not exist" % (self.database.name + "." + self.name))
         if self.db.type == MYSQL:
             q = "show columns from `%s`;" % self.name
         if self.db.type == SQLITE:
@@ -932,6 +1069,15 @@ class Table(object):
         """
         return dict(zip(self.fields, row))
 
+    class Rows(list):
+        """ A list of results from Table.filter() with a Rows.table property.
+            (i.e., like Query.table returned from Table.search()).
+        """
+        def __init__(self, table, data):
+            list.__init__(self, data); self.table=table
+        def record(self, row):
+            return self.table.record(row) # See assoc().
+
     def filter(self, *args, **kwargs):
         """ Returns the rows that match the given constraints (using equals + AND):
         """
@@ -939,11 +1085,6 @@ class Table(object):
         # Table.filter(ALL, type=("cat","dog")) => "cat" OR "dog"
         # Table.filter(ALL, type="cat", name="Taxi") => "cat" AND "Taxi"
         # Table.filter({"type":"cat", "name":"Taxi"})
-        class rowlist(list):
-            def __init__(self, table, data):
-                list.__init__(self, data); self.table=table
-            def record(self, row):
-                return self.table.record(row)
         if len(args) == 0:
             # No parameters: default to ALL fields.
             fields = ALL
@@ -960,7 +1101,7 @@ class Table(object):
         q = " and ".join(cmp(k, v, "=", self.db.escape) for k, v in kwargs.items())
         q = q and " where %s" % q or ""
         q = "select %s from `%s`%s;" % (fields, self.name, q)
-        return rowlist(self, self.db.execute(q))
+        return self.Rows(self, self.db.execute(q))
         
     def find(self, *args, **kwargs):
         return self.filter(*args, **kwargs)
@@ -1006,13 +1147,15 @@ class Table(object):
         # Table.update(1, {"age":3})
         # Table.update(all(filter(field="name", value="Taxi")), age=3)
         commit = kwargs.pop("commit", True) # As fieldname, use abs(Table.name, "commit").
+        if isinstance(id, (list, tuple)):
+            id = FilterChain(*id)
         if len(args) == 0 and len(kwargs) == 1 and isinstance(kwargs.get("values"), dict):
             kwargs = kwargs["values"]  
         if len(args) == 1 and isinstance(args[0], dict):
             a=args[0]; a.update(kwargs); kwargs=a
         kv = ", ".join("`%s`=%s" % (k, self.db.escape(v)) for k, v in kwargs.items())
         q  = "update `%s` set %s where %s;" % (self.name, kv, 
-            not isinstance(id, Group) and cmp(self.primary_key, id, "=", self.db.escape) \
+            not isinstance(id, (Filter, FilterChain)) and cmp(self.primary_key, id, "=", self.db.escape) \
              or id.SQL(escape=self.db.escape))
         self.db.execute(q, commit)
 
@@ -1022,8 +1165,10 @@ class Table(object):
         # Table.delete(1)
         # Table.delete(ALL)
         # Table.delete(all(("type","cat"), ("age",15,">")))
+        if isinstance(id, (list, tuple)):
+            id = FilterChain(*id)
         q = "delete from `%s` where %s" % (self.name, 
-            not isinstance(id, Group) and cmp(self.primary_key, id, "=", self.db.escape) \
+            not isinstance(id, (Filter, FilterChain)) and cmp(self.primary_key, id, "=", self.db.escape) \
              or id.SQL(escape=self.db.escape))
         self.db.execute(q, commit)
     
@@ -1041,7 +1186,7 @@ class Table(object):
             repr(self.name), 
             repr(self.count()),
             repr(self.db.name))
-
+            
 #### QUERY #########################################################################################
 
 #--- QUERY SYNTAX ----------------------------------------------------------------------------------
@@ -1137,24 +1282,63 @@ def sum(value):
 
 AND, OR = "and", "or"
 
-def filter(field, value, comparison="="):
-    return (field, value, comparison)
+class Filter(tuple):
+    def __new__(cls, field, value, comparison):
+        return tuple.__new__(cls, (field, value, comparison))
+    def SQL(self, **kwargs):
+        return cmp(*self, **kwargs)
 
-class Group(list):
+def filter(field, value, comparison="="):
+    return Filter(field, value, comparison)
+  
+def eq(field, value):
+    return Filter(field, value, "=")
+    
+def eqi(field, value):
+    return Filter(field, value, "i=")
+    
+def ne(field, value):
+    return Filter(field, value, "!=")
+    
+def gt(field, value):
+    return Filter(field, value, ">")
+
+def lt(field, value):
+    return Filter(field, value, "<")
+
+def gte(field, value):
+    return Filter(field, value, ">=")
+
+def lte(field, value):
+    return Filter(field, value, "<=")
+    
+def rng(field, value):
+    return Filter(field, value, ":")
+
+class FilterChain(list):
     
     def __init__(self, *args, **kwargs):
         """ A list of SQL WHERE filters combined with AND/OR logical operator.
         """
+        # FilterChain(filter("type", "cat", "="), filter("age", 5, "="), operator=AND)
+        # FilterChain(type="cat", age=5, operator=AND)
+        # FilterChain({"type": "cat", "age": 5}, operator=AND)
+        if len(args) == 1 and isinstance(args[0], dict):
+            args[0].pop("operator", None); kwargs=dict(args[0], **kwargs)
+            args = []
+        else:
+            args = list(args)
+        self.operator = kwargs.pop("operator", AND)
+        args.extend(filter(k, v, "=") for k, v in kwargs.items())
         list.__init__(self, args)
-        self.operator = kwargs.get("operator", AND)
     
     def SQL(self, **kwargs):
         """ For example, filter for small pets with tails or wings
             (which is not the same as small pets with tails or pets with wings):
-            >>> Group(
+            >>> FilterChain(
             >>>     filter("type", "pet"),
             >>>     filter("weight", (4,6), ":"),
-            >>>     Group(
+            >>>     FilterChain(
             >>>         filter("tail", True),
             >>>         filter("wing", True), operator=OR))
             Yields: 
@@ -1164,27 +1348,29 @@ class Group(list):
         a = []
         for filter in self:
             # Traverse subgroups recursively.
-            if isinstance(filter, Group):
+            if isinstance(filter, FilterChain):
                 a.append("(%s)" % filter.SQL(**kwargs))
                 continue
             # Convert filter() to string with cmp() - see above.
-            if isinstance(filter, (list, tuple)):
+            if isinstance(filter, (Filter, list, tuple)):
                 a.append(cmp(*filter, **kwargs))
                 continue
-            raise TypeError, "Group can contain other Group or filter(), not %s" % type(filter)
+            raise TypeError("FilterChain can contain other FilterChain or filter(), not %s" % type(filter))
         return (" %s " % self.operator).join(a)
         
     sql = SQL
 
-def all(*args):
+def all(*args, **kwargs):
     """ Returns a group of filters combined with AND.
     """
-    return Group(*args, **dict(operator=AND))
+    kwargs["operator"] = AND
+    return FilterChain(*args, **kwargs)
     
-def any(*args):
+def any(*args, **kwargs):
     """ Returns a group of filters combined with OR.
     """
-    return Group(*args, **dict(operator=OR))
+    kwargs["operator"] = OR
+    return FilterChain(*args, **kwargs)
     
 # From a GET-query dict:
 # all(*dict.items())
@@ -1199,8 +1385,12 @@ LEFT  = "left"  # All rows from this table, with field values from the related t
 RIGHT = "right" # All rows from the related table, with field values from this table when possible.
 FULL  = "full"  # All rows form both tables.
 
+class Relation(tuple):
+    def __new__(cls, field1, field2, table, join):
+        return tuple.__new__(cls, (field1, field2, table, join))
+
 def relation(field1, field2, table, join=LEFT):
-    return (field1, field2, table, join)
+    return Relation(field1, field2, table, join)
 
 rel = relation
     
@@ -1222,8 +1412,12 @@ class Query(object):
         # Table.search(ALL, filters=any(("type","cat"), ("type","dog")) => cats and dogs.
         # Table.search(("type", "name")), group="type", function=COUNT) => all types + amount per type.
         # Table.search(("name", "types.has_tail"), relations=[("types","type","id")]) => links type to types.id.
+        if isinstance(filters, Filter):
+            filters = [filters]
+        if isinstance(relations, Relation):
+            relations = [relations]
         Query.id += 1
-        filters = Group(*filters, **dict(operator=isinstance(filters, Group) and filters.operator or AND))
+        filters = FilterChain(*filters, **dict(operator=getattr(filters, "operator", AND)))
         self._id       = Query.id
         self._table    = table
         self.fields    = fields    # A field name, list of field names or ALL.
@@ -1550,7 +1744,7 @@ def parse_xml(database, xml, table=None, field=lambda s: s.replace(".", "-")):
     if database.connected is False:
         database.connect()
     if table in database:
-        raise TableError, "table '%s' already exists" % table
+        raise TableError("table '%s' already exists" % table)
     database.create(table, fields=schema)
     for r in rows:
         database[table].insert(r, commit=False)
@@ -1619,7 +1813,7 @@ class json(object):
             return dict(map(self.loads, self._split(kv, ":")) for kv in self._split(s.strip("{}")))
         if s.startswith("["):
             return list(self.loads(v) for v in self._split(s.strip("[]")))
-        raise TypeError, "can't process %s." % repr(string)
+        raise TypeError("can't process %s." % repr(string))
 
     def dumps(self, obj, *args, **kwargs):
         """ Returns a JSON string from the given data.
@@ -1639,7 +1833,7 @@ class json(object):
             return "{%s}" % ", ".join(['%s: %s' % (self.encode(k), self.dumps(v)) for k, v in sorted(obj.items())])
         if isinstance(obj, (list, tuple, GeneratorType)):
             return "[%s]" % ", ".join(self.dumps(v) for v in obj)
-        raise TypeError, "can't process %s." % type(obj)
+        raise TypeError("can't process %s." % type(obj))
 
 try: import json # Python 2.6+
 except:
@@ -1652,14 +1846,14 @@ except:
 #db.persons.append((json.dumps({"name": u"Schrödinger", "type": "cat"}),))
 #
 #for id, data in db.persons:
-#    print id, json.loads(data)
+#    print(id, json.loads(data))
 
 #### DATASHEET #####################################################################################
 
 #--- CSV -------------------------------------------------------------------------------------------
 
 # Raise the default field size limit:
-csvlib.field_size_limit(sys.maxint)
+csvlib.field_size_limit(sys.maxsize)
 
 def csv_header_encode(field, type=STRING):
     # csv_header_encode("age", INTEGER) => "age (INTEGER)".
@@ -1689,7 +1883,7 @@ class CSV(list):
     def __init__(self, rows=[], fields=None, **kwargs):
         # List of (name, type)-tuples (STRING, INTEGER, FLOAT, DATE, BOOLEAN).
         fields = fields or kwargs.pop("headers", None)
-        fields = fields and [f if isinstance(f, tuple) else (f, None) for f in fields] or None
+        fields = fields and [tuple(f) if isinstance(f, (tuple, list)) else (f, None) for f in fields] or None
         self.__dict__["fields"] = fields
         if hasattr(rows, "__iter__"):
             self.extend(rows, **kwargs)
@@ -1704,7 +1898,7 @@ class CSV(list):
         
     headers = property(_get_headers, _set_headers)
 
-    def save(self, path, separator=",", encoder=lambda v: v, headers=False, **kwargs):
+    def save(self, path, separator=",", encoder=lambda v: v, headers=False, password=None, **kwargs):
         """ Exports the table to a unicode text file at the given path.
             Rows in the file are separated with a newline.
             Columns in a row are separated with the given separator (by default, comma).
@@ -1723,27 +1917,39 @@ class CSV(list):
         s = s.getvalue()
         s = s.strip()
         s = re.sub("([^\"]|^)\"None\"", "\\1None", s)
+        s = s if not password else encrypt_string(s, password)
         f = open(path, "wb")
         f.write(BOM_UTF8)
         f.write(s)
         f.close()
 
     @classmethod
-    def load(cls, path, separator=",", decoder=lambda v: v, headers=False, preprocess=lambda s: s, **kwargs):
+    def load(cls, path, separator=",", decoder=lambda v: v, headers=False, preprocess=None, password=None, **kwargs):
         """ Returns a table from the data in the given text file.
             Rows are expected to be separated by a newline. 
             Columns are expected to be separated by the given separator (by default, comma).
             Strings will be converted to int, float, bool, date or None if headers are parsed.
             For other data types, a custom string decoder can be given.
+            A preprocess(str) function can be given to change the file content before parsing.
         """
         # Date objects are saved and loaded as strings, but it is easy to convert these back to dates:
         # - set a DATE field type for the column,
         # - or do Table.columns[x].map(lambda s: date(s))
-        data = open(path, "rb").read().replace(BOM_UTF8, "")
-        data = preprocess(data)
-        data = "\n".join(line for line in data.splitlines()) # Excel \r => \n
-        data = StringIO(data)
-        data = [row for row in csvlib.reader(data, delimiter=separator)]
+        data = open(path, "rU")
+        data = data if not password else decrypt_string(data.read(), password)
+        data = data if not password else StringIO(data.replace("\r\n", "\n").replace("\r", "\n"))
+        data = data if not preprocess else StringIO(preprocess(data.read()))
+        data.seek(data.readline().startswith(BOM_UTF8) and len(BOM_UTF8) or 0)
+        data = csvlib.reader(data, delimiter=separator)
+        i, n = kwargs.get("start"), kwargs.get("count")
+        if i is not None and n is not None:
+            data = list(islice(data, i, i+n))
+        elif i is not None:
+            data = list(islice(data, i, None))
+        elif n is not None:
+            data = list(islice(data, n))
+        else:
+            data = list(data)
         if headers:
             fields  = [csv_header_decode(field) for field in data.pop(0)]
             fields += [(None, None)] * (max([0]+[len(row) for row in data]) - len(fields))
@@ -1800,7 +2006,7 @@ class Datasheet(CSV):
         # Datasheet.rows property can't be set, except in special case Datasheet.rows += row.
         if isinstance(rows, DatasheetRows) and rows._datasheet == self:
             self._rows = rows; return
-        raise AttributeError, "can't set attribute"
+        raise AttributeError("can't set attribute")
     rows = property(_get_rows, _set_rows)
     
     def _get_columns(self):
@@ -1809,24 +2015,24 @@ class Datasheet(CSV):
         # Datasheet.columns property can't be set, except in special case Datasheet.columns += column.
         if isinstance(columns, DatasheetColumns) and columns._datasheet == self:
             self._columns = columns; return
-        raise AttributeError, "can't set attribute"
+        raise AttributeError("can't set attribute")
     columns = cols = property(_get_columns, _set_columns)
     
     def __getattr__(self, k):
         """ Columns can be retrieved by field name, e.g., Datasheet.date.
         """
-        #print "Datasheet.__getattr__", k
+        #print("Datasheet.__getattr__", k)
         if k in self.__dict__:
             return self.__dict__[k]
         for i, f in enumerate(f[0] for f in self.__dict__["fields"] or []):
             if f == k: 
                 return self.__dict__["_columns"][i]
-        raise AttributeError, "'Datasheet' object has no attribute '%s'" % k
+        raise AttributeError("'Datasheet' object has no attribute '%s'" % k)
         
     def __setattr__(self, k, v):
         """ Columns can be set by field name, e.g., Datasheet.date = [...].
         """
-        #print "Datasheet.__setattr__", k
+        #print("Datasheet.__setattr__", k)
         if k in self.__dict__:
             self.__dict__[k] = v
             return
@@ -1842,7 +2048,7 @@ class Datasheet(CSV):
         for i, f in enumerate(f[0] for f in self.__dict__["fields"] or []):
             if f == k: 
                 self.__dict__["_columns"].__setitem__(i, v); return
-        raise AttributeError, "'Datasheet' object has no attribute '%s'" % k
+        raise AttributeError("'Datasheet' object has no attribute '%s'" % k)
     
     def __setitem__(self, index, value):
         """ Sets an item or row in the matrix.
@@ -1855,7 +2061,7 @@ class Datasheet(CSV):
             self.pop(index)
             self.insert(index, value)
         else:
-            raise TypeError, "Datasheet indices must be int or tuple"
+            raise TypeError("Datasheet indices must be int or tuple")
     
     def __getitem__(self, index):
         """ Returns an item, row or slice from the matrix.
@@ -1878,7 +2084,7 @@ class Datasheet(CSV):
             return Datasheet(
                   rows = (row[j] for row in list.__getitem__(self, i)),
                 fields = self.fields and self.fields[j] or self.fields)
-        raise TypeError, "Datasheet indices must be int, tuple or slice"
+        raise TypeError("Datasheet indices must be int, tuple or slice")
 
     def __getslice__(self, i, j):
         # Datasheet[i1:i2] => Datasheet with rows i1-i2.
@@ -1907,7 +2113,7 @@ class Datasheet(CSV):
             # Copy the row (fast + safe for generators and DatasheetColumns).
             row = [v for v in row]
         except:
-            raise TypeError, "Datasheet.insert(x): x must be list"
+            raise TypeError("Datasheet.insert(x): x must be list")
         list.insert(self, i, row)
         m = max((len(self) > 1 and self._m or 0, len(row)))
         if len(row) < m:
@@ -1974,11 +2180,16 @@ class Datasheet(CSV):
         u = [None] * len(o)
         for v in g:
             # List the column values for each group row.
-            u[o[v]] = [[list.__getitem__(self, i)[j] for i in g[v]] for j in range(self._m)]
+            u[o[v]] = [[list.__getitem__(self, i)[j] for i in g[v]] for j in xrange(self._m)]
             # Apply the group function to each row, except the unique value in column j.
             u[o[v]] = [function[j](column) for j, column in enumerate(u[o[v]])]
             u[o[v]][J] = v # list.__getitem__(self, i)[J]
         return Datasheet(rows=u)
+        
+    def record(self, row):
+        """ Returns the given row as a dictionary of (field or alias, value)-items.
+        """
+        return dict(zip((f for f, type in self.fields), row))
                 
     def map(self, function=lambda item: item):
         """ Applies the given function to each item in the matrix.
@@ -1990,7 +2201,7 @@ class Datasheet(CSV):
     def slice(self, i, j, n, m):
         """ Returns a new Datasheet starting at row i and column j and spanning n rows and m columns.
         """
-        return Datasheet(rows=[list.__getitem__(self, i)[j:j+m] for i in range(i, i+n)])
+        return Datasheet(rows=[list.__getitem__(self, i)[j:j+m] for i in xrange(i, i+n)])
 
     def copy(self, rows=ALL, columns=ALL):
         """ Returns a new Datasheet from a selective list of row and/or column indices.
@@ -2003,7 +2214,15 @@ class Datasheet(CSV):
             return Datasheet(rows=(self.rows[i] for i in rows))
         z = zip(*(self.columns[j] for j in columns))
         return Datasheet(rows=(z[i] for i in rows))
-    
+            
+    @property
+    def array(self):
+        """ Returns a NumPy array. 
+            Arrays must have elements of the same type, and rows of equal size.
+        """
+        import numpy
+        return numpy.array(self)
+        
     @property
     def json(self, **kwargs):
         """ Returns a JSON-string, as a list of dictionaries (if fields are defined) or as a list of lists.
@@ -2015,14 +2234,39 @@ class Datasheet(CSV):
         else:
             s = json.dumps(self, **kwargs)
         return decode_utf8(s)
-            
+        
     @property
-    def array(self):
-        """ Returns a NumPy array. 
-            Arrays must have elements of the same type, and rows of equal size.
+    def html(self):
+        """ Returns a HTML-string with a <table>.
+            This is useful for viewing the data, e.g., open("data.html", "wb").write(datasheet.html).
         """
-        import numpy
-        return numpy.array(self)
+        def encode(s):
+            s = "%s" % s
+            s = s.replace("&", "&amp;")
+            s = s.replace("<", "&lt;")
+            s = s.replace(">", "&gt;")
+            s = s.replace("-", "&#8209;")
+            s = s.replace("\n", "<br>\n")
+            return s
+        a = []
+        a.append("<meta charset=\"utf8\">\n")
+        a.append("<style>")
+        a.append("table.datasheet { border-collapse: collapse; font: 11px sans-serif; } ")
+        a.append("table.datasheet * { border: 1px solid #ddd; padding: 4px; } ")
+        a.append("</style>\n")
+        a.append("<table class=\"datasheet\">\n")
+        if self.fields is not None:
+            a.append("<tr>\n")
+            a.append("\t<th>%s</th>\n" % "#")
+            a.extend("\t<th>%s</th>\n" % encode(f[0]) for f in self.fields)
+            a.append("</tr>\n")
+        for i, row in enumerate(self):
+            a.append("<tr>\n")
+            a.append("\t<td>%s</td>\n" % (i+1))
+            a.extend("\t<td>%s</td>\n" % encode(v) for v in row)
+            a.append("</tr>\n")
+        a.append("</table>")
+        return encode_utf8("".join(a))
         
 def flip(datasheet):
     """ Returns a new datasheet with rows for columns and columns for rows.
@@ -2049,6 +2293,8 @@ class DatasheetRows(list):
         self._datasheet.insert(i, row)
     def __getitem__(self, i):
         return list.__getitem__(self._datasheet, i)
+    def __getslice__(self, i, j):
+        return self._datasheet[i:j]
     def __delitem__(self, i):
         self.pop(i)
     def __len__(self):
@@ -2058,7 +2304,7 @@ class DatasheetRows(list):
     def __repr__(self):
         return repr(self._datasheet)
     def __add__(self, row):
-        raise TypeError, "unsupported operand type(s) for +: 'Datasheet.rows' and '%s'" % row.__class__.__name__
+        raise TypeError("unsupported operand type(s) for +: 'Datasheet.rows' and '%s'" % row.__class__.__name__)
     def __iadd__(self, row):
         self.append(row); return self
     def __eq__(self, rows):
@@ -2109,8 +2355,10 @@ class DatasheetColumns(list):
     def __getitem__(self, j):
         if j < 0: j = j % len(self) # DatasheetColumns[-1]
         if j >= len(self): 
-            raise IndexError, "list index out of range"
+            raise IndexError("list index out of range")
         return self._cache.setdefault(j, DatasheetColumn(self._datasheet, j))
+    def __getslice__(self, i, j):
+        return self._datasheet[:,i:j]
     def __delitem__(self, j):
         self.pop(j)
     def __len__(self):
@@ -2120,7 +2368,7 @@ class DatasheetColumns(list):
     def __repr__(self):
         return repr(list(iter(self)))    
     def __add__(self, column):
-        raise TypeError, "unsupported operand type(s) for +: 'Datasheet.columns' and '%s'" % column.__class__.__name__
+        raise TypeError("unsupported operand type(s) for +: 'Datasheet.columns' and '%s'" % column.__class__.__name__)
     def __iadd__(self, column):
         self.append(column); return self
     def __eq__(self, columns):
@@ -2134,7 +2382,7 @@ class DatasheetColumns(list):
         """
         try: column = [v for v in column]
         except:
-            raise TypeError, "Datasheet.columns.insert(x): x must be list"
+            raise TypeError("Datasheet.columns.insert(x): x must be list")
         column = column + [default] * (len(self._datasheet) - len(column))
         if len(column) > len(self._datasheet):
             self._datasheet.extend([[None]] * (len(column)-len(self._datasheet)))
@@ -2155,7 +2403,7 @@ class DatasheetColumns(list):
     def remove(self, column):
         if isinstance(column, DatasheetColumn) and column._datasheet == self._datasheet:
             self.pop(column._j); return
-        raise ValueError, "list.remove(x): x not in list"
+        raise ValueError("list.remove(x): x not in list")
     
     def pop(self, j):
         column = list(self[j]) # Return a list copy.
@@ -2166,7 +2414,7 @@ class DatasheetColumns(list):
         self._cache[j]._datasheet = Datasheet(rows=[[v] for v in column])
         self._cache[j]._j = 0
         self._cache.pop(j)
-        for k in range(j+1, len(self)+1):
+        for k in xrange(j+1, len(self)+1):
             if k in self._cache:
                 # Shift the DatasheetColumn objects on the right to the left.
                 self._cache[k-1] = self._cache.pop(k)
@@ -2187,7 +2435,12 @@ class DatasheetColumns(list):
     
     def sort(self, cmp=None, key=None, reverse=False, order=None):
         # This makes most sense if the order in which columns should appear is supplied.
-        o = order and order or _order(self, cmp, key, reverse)
+        if order and reverse is True:
+            o = list(reversed(order))
+        if order and reverse is False:
+            o = list(order)
+        if not order:
+            o = _order(self, cmp, key, reverse)
         for i, row in enumerate(self._datasheet):
             # The main difficulty is modifying each row in-place,
             # since other variables might be referring to it.
@@ -2215,7 +2468,9 @@ class DatasheetColumn(list):
         """
         self._datasheet = datasheet
         self._j = j
-    
+
+    def __getslice__(self, i, j):
+        return list(list.__getitem__(self._datasheet, i)[self._j] for i in xrange(i, min(j, len(self._datasheet))))
     def __getitem__(self, i):
         return list.__getitem__(self._datasheet, i)[self._j]
     def __setitem__(self, i, value):
@@ -2224,6 +2479,8 @@ class DatasheetColumn(list):
         return len(self._datasheet)
     def __iter__(self): # Can be put more simply but optimized for performance:
         for i in xrange(len(self)): yield list.__getitem__(self._datasheet, i)[self._j]
+    def __reversed__(self):
+        return reversed(list(iter(self)))
     def __repr__(self):
         return repr(list(iter(self)))
     def __gt__(self, column):
@@ -2238,10 +2495,10 @@ class DatasheetColumn(list):
         return list(self) == column
     def __ne__(self, column):
         return not self.__eq__(column)
-    def __add__(self, value):
-        raise TypeError, "unsupported operand type(s) for +: 'Datasheet.columns[x]' and '%s'" % value.__class__.__name__
-    def __iadd__(self, value):
-        self.append(value); return self
+    def __add__(self, column):
+        return list(self) + list(column)
+    def __iadd__(self, column):
+        self.extend(column)
     def __contains__(self, value):
         for v in self:
             if v == value: return True
@@ -2254,7 +2511,7 @@ class DatasheetColumn(list):
         for i, v in enumerate(self):
             if v == value: 
                 return i
-        raise ValueError, "list.index(x): x not in list"
+        raise ValueError("list.index(x): x not in list")
 
     def remove(self, value):
         """ Removes the matrix row that has the given value in this column.
@@ -2262,7 +2519,7 @@ class DatasheetColumn(list):
         for i, v in enumerate(self):
             if v == value:
                 self._datasheet.pop(i); return
-        raise ValueError, "list.remove(x): x not in list"
+        raise ValueError("list.remove(x): x not in list")
         
     def pop(self, i):
         """ Removes the entire row from the matrix and returns the value at the given index.
@@ -2294,6 +2551,15 @@ class DatasheetColumn(list):
         """
         for j, value in enumerate(self):
             self[j] = function(value)
+            
+    def filter(self, function=lambda value: True):
+        """ Removes the matrix rows for which function(value) in the column is not True.
+        """
+        i = len(self)
+        for v in reversed(self):
+            i -= 1
+            if not function(v):
+                self._datasheet.pop(i)
             
     def swap(self, i1, i2):
         self._datasheet.swap(i1, i2)
@@ -2337,6 +2603,8 @@ def pprint(datasheet, truncate=40, padding=" ", fill="."):
             # Strings that span beyond the maximum column width are wrapped.
             # Thus, each "field" in the row is a list of lines.
             lines = []
+            if not isinstance(v, basestring):
+                v = str(v)
             for v in v.splitlines():
                 v = decode_utf8(v.strip())
                 while v:
@@ -2350,10 +2618,11 @@ def pprint(datasheet, truncate=40, padding=" ", fill="."):
         n = max([len(lines) for lines in fields])
         fields = [lines+[""] * (n-len(lines)) for lines in fields]
         # Print the row line per line, justifying the fields with spaces.
-        for k in range(n):
+        columns = []
+        for k in xrange(n):
             for j, lines in enumerate(fields):
                 s  = lines[k]
                 s += ((k==0 or len(lines[k]) > 0) and fill or " ") * (w[j] - len(lines[k])) 
                 s += padding
-                print s,
-            print
+                columns.append(s)
+            print(" ".join(columns))

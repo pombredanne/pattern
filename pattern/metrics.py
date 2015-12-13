@@ -5,15 +5,20 @@
 # License: BSD (see LICENSE.txt for details).
 # http://www.clips.ua.ac.be/pages/pattern
 
+import sys
+
 from time import time
-from math import sqrt, floor, modf, exp, pi, log
+from math import sqrt, floor, ceil, modf, exp, pi, log
 
 from collections import defaultdict, deque
-from itertools   import izip, chain
-from operator    import itemgetter
+from itertools   import chain
+from operator    import itemgetter, lt, le
 from heapq       import nlargest
 from bisect      import bisect_right
 from random      import gauss
+
+if sys.version > "3":
+    xrange = range
 
 ####################################################################################################
 # Simple implementation of Counter for Python 2.5 and 2.6.
@@ -86,7 +91,7 @@ def profile(function, *args, **kwargs):
     def run():
         function(*args, **kwargs)
     if not hasattr(function, "__call__"):
-        raise TypeError, "%s is not a function" % type(function)
+        raise TypeError("%s is not a function" % type(function))
     try:
         import cProfile as profile
     except:
@@ -104,6 +109,16 @@ def profile(function, *args, **kwargs):
     os.remove(id)
     return s
 
+def sizeof(object):
+    """ Returns the memory size of the given object (in bytes).
+    """
+    return sys.getsizeof(object)
+    
+def kb(object):
+    """ Returns the memory size of the given object (in kilobytes).
+    """
+    return sys.getsizeof(object) * 0.01
+    
 #### PRECISION & RECALL ############################################################################
 
 ACCURACY, PRECISION, RECALL, F1_SCORE = "accuracy", "precision", "recall", "F1-score"
@@ -208,7 +223,7 @@ def roc(tests=[]):
     x = FPR = lambda TP, TN, FP, FN: float(FP) / ((FP + TN) or 1)
     y = TPR = lambda TP, TN, FP, FN: float(TP) / ((TP + FN) or 1)
     return sorted([(0.0, 0.0), (1.0, 1.0)] + [(x(*m), y(*m)) for m in tests])
-    
+
 def auc(curve=[]):
     """ Returns the area under the curve for the given list of (x, y)-points.
         The area is calculated using the trapezoidal rule.
@@ -218,7 +233,7 @@ def auc(curve=[]):
     """
     curve = sorted(curve)
     # Trapzoidal rule: area = (a + b) * h / 2, where a=y0, b=y1 and h=x1-x0.
-    return sum(0.5 * (x1 - x0) * (y1 + y0) for (x0, y0), (x1, y1) in sorted(izip(curve, curve[1:])))
+    return sum(0.5 * (x1 - x0) * (y1 + y0) for (x0, y0), (x1, y1) in sorted(zip(curve, curve[1:])))
 
 #### AGREEMENT #####################################################################################
 # +1.0 = total agreement between voters
@@ -268,7 +283,7 @@ def levenshtein(string1, string2):
     if n > m: 
         # Make sure n <= m to use O(min(n,m)) space.
         string1, string2, n, m = string2, string1, m, n
-    current = range(n+1)
+    current = list(xrange(n+1))
     for i in xrange(1, m+1):
         previous, current = current, [i]+[0]*n
         for j in xrange(1, n+1):
@@ -323,7 +338,11 @@ def flesch_reading_ease(string):
             n += int(v and not p)
             p = v
         return n
+    if not isinstance(string, basestring):
+        raise TypeError("%s is not a string" % repr(string))
     if len(string) <  3:
+        return 1.0
+    if len(string.split(" ")) < 2:
         return 1.0
     string = string.strip()
     string = string.strip("\"'().")
@@ -333,8 +352,8 @@ def flesch_reading_ease(string):
     string = string.replace(",", " ")
     string = " ".join(string.split())
     y = [count_syllables(w) for w in string.split() if w != ""]
-    w = len([w for w in string.split(" ") if w != ""])
-    s = len([s for s in string.split(".") if len(s) > 2])
+    w = max(1, len([w for w in string.split(" ") if w != ""]))
+    s = max(1, len([s for s in string.split(".") if len(s) > 2]))
     #R = 206.835 - 1.015 * w/s - 84.6 * sum(y)/w
     # Use the Farr, Jenkins & Patterson algorithm,
     # which uses simpler syllable counting (count_syllables() is the weak point here). 
@@ -459,6 +478,9 @@ def suffixes(inflections=[], n=3, top=10, reverse=True):
 
 #--- WORD CO-OCCURRENCE ----------------------------------------------------------------------------
 
+class Sentinel(object):
+    pass
+
 def isplit(string, sep="\t\n\x0b\x0c\r "):
     """ Returns an iterator over string.split().
         This is efficient in combination with cooccurrence(), 
@@ -482,8 +504,6 @@ def cooccurrence(iterable, window=(-1,-1), term1=lambda x: True, term2=lambda x:
         Optionally, a user-defined matrix to update can be given.
         Optionally, a user-defined update(matrix, term1, term2, index2) function can be given.
     """
-    class Sentinel(object):
-        pass
     if not isinstance(matrix, dict):
         matrix = {}
     # Memory-efficient iteration:
@@ -539,19 +559,78 @@ co_occurrence = cooccurrence
 ## Words occuring before and after the word "cat":
 ## {"cat": {"sat": 1, "black": 1, "cat": 1}}
 #s = "The black cat sat on the mat."
-#print cooccurrence(s, window=(-1,1), 
+#print(cooccurrence(s, window=(-1,1), 
 #       search = lambda w: w in ("cat",),
-#    normalize = lambda w: w.lower().strip(".:;,!?()[]'\""))
+#    normalize = lambda w: w.lower().strip(".:;,!?()[]'\"")))
 
 ## Adjectives preceding nouns:
 ## {("cat", "NN"): {("black", "JJ"): 1}}
 #s = [("The","DT"), ("black","JJ"), ("cat","NN"), ("sat","VB"), ("on","IN"), ("the","DT"), ("mat","NN")]
-#print cooccurrence(s, window=(-2,-1), 
+#print(cooccurrence(s, window=(-2,-1), 
 #       search = lambda token: token[1].startswith("NN"),
-#       filter = lambda token: token[1].startswith("JJ"))
+#       filter = lambda token: token[1].startswith("JJ")))
 
 # Adjectives preceding nouns:
 # {("cat", "NN"): {("black", "JJ"): 1}}
+
+#### INTERPOLATION #################################################################################
+
+def lerp(a, b, t):
+    """ Returns the linear interpolation between a and b at time t between 0.0-1.0.
+        For example: lerp(100, 200, 0.5) => 150.
+    """
+    if t < 0.0:
+        return a
+    if t > 1.0:
+        return b
+    return a + (b - a) * t
+    
+def smoothstep(a, b, x):
+    """ Returns the Hermite interpolation (cubic spline) for x between a and b.
+        The return value between 0.0-1.0 eases (slows down) as x nears a or b.
+    """
+    if x < a: 
+        return 0.0
+    if x >= b: 
+        return 1.0
+    x = float(x - a) / (b - a)
+    return x * x * (3 - 2 * x)
+
+def smoothrange(a=None, b=None, n=10):
+    """ Returns an iterator of approximately n values v1, v2, ... vn,
+        so that v1 <= a, and vn >= b, and all values are multiples of 1, 2, 5 and 10.
+        For example: list(smoothrange(1, 123)) => [0, 20, 40, 60, 80, 100, 120, 140],
+    """
+    def _multiple(v, round=False):
+        e = floor(log(v, 10)) # exponent
+        m = pow(10, e)        # magnitude
+        f = v / m             # fraction
+        if round is True:
+            op, x, y, z = lt, 1.5, 3.0, 7.0
+        if round is False:
+            op, x, y, z = le, 1.0, 2.0, 5.0
+        if op(f, x):
+            return m * 1
+        if op(f, y):
+            return m * 2
+        if op(f, z):
+            return m * 5
+        else:
+            return m * 10
+    if a is None and b is None:
+        a, b = 0, 1
+    if a is None:
+        a, b = 0, b
+    if b is None:
+        a, b = 0, a
+    if a == b:
+        yield float(a); raise StopIteration
+    r = _multiple(b - a)
+    t = _multiple(r / (n - 1), round=True)
+    a = floor(a / t) * t
+    b =  ceil(b / t) * t
+    for i in range(int((b - a) / t) + 1):
+        yield a + i * t
 
 #### STATISTICS ####################################################################################
 
@@ -566,13 +645,19 @@ def mean(iterable):
 
 avg = mean
 
+def hmean(iterable):
+    """ Returns the harmonic mean of the given list of values.
+    """
+    a = iterable if isinstance(iterable, list) else list(iterable)
+    return float(len(a)) / sum(1.0 / x for x in a)
+
 def median(iterable, sort=True):
     """ Returns the value that separates the lower half from the higher half of values in the list.
     """
     s = sorted(iterable) if sort is True else list(iterable)
     n = len(s)
     if n == 0:
-        raise ValueError, "median() arg is an empty sequence"
+        raise ValueError("median() arg is an empty sequence")
     if n % 2 == 0:
         return float(s[(n // 2) - 1] + s[n // 2]) / 2
     return s[n // 2]
@@ -615,7 +700,7 @@ def histogram(iterable, k=10, range=None):
     # To loop through the intervals in sorted order, use:
     # for (i, j), values in sorted(histogram(iterable).items()):
     #     m = i + (j - i) / 2 # midpoint
-    #     print i, j, m, values
+    #     print(i, j, m, values)
     a = iterable if isinstance(iterable, list) else list(iterable)
     r = range or (min(a), max(a))
     k = max(int(k), 1)
@@ -624,7 +709,7 @@ def histogram(iterable, k=10, range=None):
     for x in a:
         i = int(floor((x - r[0]) / w))
         if 0 <= i < len(h): 
-            #print x, i, "(%.2f, %.2f)" % (r[0] + w * i, r[0] + w + w * i)
+            #print(x, i, "(%.2f, %.2f)" % (r[0] + w * i, r[0] + w + w * i))
             h[i].append(x)
     return dict(((r[0] + w * i, r[0] + w + w * i), v) for i, v in enumerate(h))
 
@@ -665,8 +750,8 @@ def kurtosis(iterable, sample=False):
 
 #a = 1
 #b = 1000
-#U = [float(i-a)/(b-a) for i in range(a,b)] # uniform distribution
-#print abs(-1.2 - kurtosis(U)) < 0.0001
+#U = [float(i-a)/(b-a) for i in xrange(a,b)] # uniform distribution
+#print(abs(-1.2 - kurtosis(U)) < 0.0001)
 
 #--- QUANTILE --------------------------------------------------------------------------------------
 
@@ -682,7 +767,7 @@ def quantile(iterable, p=0.5, sort=True, a=1, b=-1, c=0, d=1):
     n = len(s)
     f, i = modf(a + (b+n) * p - 1)
     if n == 0:
-        raise ValueError, "quantile() arg is an empty sequence"
+        raise ValueError("quantile() arg is an empty sequence")
     if f == 0: 
         return float(s[int(i)])
     if i < 0: 
@@ -692,7 +777,7 @@ def quantile(iterable, p=0.5, sort=True, a=1, b=-1, c=0, d=1):
     i = int(floor(i))
     return s[i] + (s[i+1] - s[i]) * (c + d * f)
 
-#print quantile(range(10), p=0.5) == median(range(10))
+#print(quantile(xrange(10), p=0.5) == median(xrange(10)))
 
 def boxplot(iterable, **kwargs):
     """ Returns a tuple (min(list), Q1, Q2, Q3, max(list)) for the given list of values.
@@ -748,8 +833,8 @@ def fisher_exact_test(a, b, c, d, **kwargs):
     # Probabilities of "more extreme" data, in both directions (two-tailed).
     # Based on: http://www.koders.com/java/fid868948AD5196B75C4C39FEA15A0D6EAF34920B55.aspx?s=252
     s = [cutoff] + \
-        [p(a+i, b-i, c-i, d+i) for i in xrange(1, min(b, c) + 1)] + \
-        [p(a-i, b+i, c+i, d-i) for i in xrange(1, min(a, d) + 1)]
+        [p(a+i, b-i, c-i, d+i) for i in xrange(1, min(int(b), int(c)) + 1)] + \
+        [p(a-i, b+i, c+i, d-i) for i in xrange(1, min(int(a), int(d)) + 1)]
     return sum(v for v in s if v <= cutoff) or 0.0
     
 fisher = fisher_test = fisher_exact_test
@@ -805,7 +890,7 @@ def pearson_chi_squared_test(observed=[], expected=[], df=None, tail=UPPER):
     p = gammai(df * 0.5, x2 * 0.5, tail)
     return (x2, p)
     
-chi2 = chi_squared = pearson_chi_squared_test
+X2 = x2 = chi2 = chi_square = chi_squared = pearson_chi_squared_test
 
 def chi2p(x2, df=1, tail=UPPER):
     """ Returns p-value for given x2 and degrees of freedom.
@@ -895,7 +980,7 @@ def gammaln(x):
     y = x + 5.5
     y = (x + 0.5) * log(y) - y
     n = 1.0
-    for i in range(6):
+    for i in xrange(6):
         x += 1
         n += (
           76.18009173, 
@@ -922,7 +1007,7 @@ def gammai(a, x, tail=UPPER):
             s = s + d
             if abs(d) < abs(s) * epsilon:
                 return (s * exp(-x + a * log(x) - ln), ln)
-        raise StopIteration, (abs(d), abs(s) * epsilon)
+        raise StopIteration(abs(d), abs(s) * epsilon)
     
     # Continued fraction approximation.
     def _gf(a, x, epsilon=3.e-7, iterations=200):
@@ -944,7 +1029,7 @@ def gammai(a, x, tail=UPPER):
                 if abs((g - g0) / g) < epsilon:
                     return (g * exp(-x + a * log(x) - ln), ln)
                 g0 = g
-        raise StopIteration, (abs((g-g0) / g))
+        raise StopIteration(abs((g-g0) / g))
 
     if a <= 0.0:
         return 1.0
@@ -1025,6 +1110,6 @@ def kolmogorov(x):
         return 0.0
     x = -2.0 * x * x
     k = 0
-    for i in reversed(range(1, 27+1, 2)): # 27 25 23 ... 1
+    for i in reversed(xrange(1, 27+1, 2)): # 27 25 23 ... 1
         k = (1 - k) * exp(x * i)
     return 2.0 * k

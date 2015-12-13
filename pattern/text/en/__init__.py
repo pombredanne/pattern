@@ -12,7 +12,7 @@ import os
 import sys
 
 try:
-    MODULE = os.path.dirname(os.path.abspath(__file__))
+    MODULE = os.path.dirname(os.path.realpath(__file__))
 except:
     MODULE = ""
 
@@ -120,11 +120,12 @@ class Sentiment(_Sentiment):
                     self.annotate(w + "ly", "RB", p, s, i)
 
 parser = Parser(
-     lexicon = os.path.join(MODULE, "en-lexicon.txt"),    # A dict of known words -> most frequent tag.
+     lexicon = os.path.join(MODULE, "en-lexicon.txt"),    # A dict of known words => most frequent tag.
+   frequency = os.path.join(MODULE, "en-frequency.txt"),  # A dict of word frequency.
        model = os.path.join(MODULE, "en-model.slp"),      # A SLP classifier trained on WSJ (01-07).
   morphology = os.path.join(MODULE, "en-morphology.txt"), # A set of suffix rules (e.g., -ly = adverb).
      context = os.path.join(MODULE, "en-context.txt"),    # A set of contextual rules.
-    entities = os.path.join(MODULE, "en-entities.txt"),   # A dict of named entities: Bill = NNP-PERS.
+    entities = os.path.join(MODULE, "en-entities.txt"),   # A dict of named entities: John = NNP-PERS.
      default = ("NN", "NNP", "CD"),
     language = "en"
 )
@@ -173,7 +174,16 @@ def tag(s, tokenize=True, encoding="utf-8", **kwargs):
         for token in sentence:
             tags.append((token[0], token[1]))
     return tags
-    
+
+def keywords(s, top=10, **kwargs):
+    """ Returns a sorted list of keywords in the given string.
+    """
+    return parser.find_keywords(s, **dict({
+        "frequency": parser.frequency,
+              "top": top,
+              "pos": ("NN",),
+           "ignore": ("rt",)}, **kwargs))
+
 def suggest(w):
     """ Returns a list of (word, confidence)-tuples of spelling corrections.
     """
@@ -193,7 +203,7 @@ def positive(s, threshold=0.1, **kwargs):
     """ Returns True if the given sentence has a positive sentiment (polarity >= threshold).
     """
     return polarity(s, **kwargs) >= threshold
-    
+
 split = tree # Backwards compatibility.
 
 #---------------------------------------------------------------------------------------------------

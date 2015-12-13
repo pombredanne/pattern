@@ -24,7 +24,7 @@ import sys
 import re
 
 try:
-    MODULE = os.path.dirname(os.path.abspath(__file__))
+    MODULE = os.path.dirname(os.path.realpath(__file__))
 except:
     MODULE = ""
     
@@ -209,6 +209,8 @@ def pluralize(word, pos=NOUN, gender=MALE, role=SUBJECT, custom={}):
         The inflection is based on probability rather than gender and role.
     """
     w = word.lower().capitalize()
+    if word in custom:
+        return custom[word]
     if pos == NOUN:
         for a, b in plural_inflections:
             if w.endswith(a):
@@ -303,11 +305,19 @@ singular_inflections = [
     (   "ver", "ver"), (   "zer",  "zer"),
 ]
 
+singular = {
+    u"Löwen": u"Löwe",
+}
+
 def singularize(word, pos=NOUN, gender=MALE, role=SUBJECT, custom={}):
     """ Returns the singular of a given word.
         The inflection is based on probability rather than gender and role.
     """
     w = word.lower().capitalize()
+    if word in custom:
+        return custom[word]
+    if word in singular:
+        return singular[word]
     if pos == NOUN:
         for a, b in singular_inflections:
             if w.endswith(a):
@@ -315,7 +325,11 @@ def singularize(word, pos=NOUN, gender=MALE, role=SUBJECT, custom={}):
         # Default rule: strip known plural suffixes (baseline = 51%).
         for suffix in ("nen", "en", "n", "e", "er", "s"):
             if w.endswith(suffix):
-                return w[:-len(suffix)]
+                w = w[:-len(suffix)]
+                break
+        # Corrections (these add about 1% accuracy):
+        if w.endswith(("rr", "rv", "nz")):
+            return w + "e"
         return w
     return w
 
@@ -376,7 +390,7 @@ class Verbs(_Verbs):
         b = b.replace("eeiss", "eiss")
         b = b.replace("eeid", "eit")
         # Subjunctive: wechselte => wechseln
-        if not b.endswith(("e", "l")) and not (b.endswith("er") and not b[-3] in VOWELS):
+        if not b.endswith(("e", "l")) and not (b.endswith("er") and len(b) >= 3 and not b[-3] in VOWELS):
             b = b + "e"
         # abknallst != abknalln => abknallen
         if b.endswith(("hl", "ll", "ul", "eil")):
@@ -562,6 +576,6 @@ def comparative(adjective):
 def superlative(adjective):
     return grade(adjective, SUPERLATIVE)
 
-#print comparative(u"schönes")
-#print superlative(u"schönes")
-#print superlative(u"große")
+#print(comparative(u"schönes"))
+#print(superlative(u"schönes"))
+#print(superlative(u"große"))

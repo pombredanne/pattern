@@ -10,7 +10,7 @@
 # for sentence in parsetree("The cat sat on the mat."):
 #     for chunk in sentence.chunks:
 #         for word in chunk.words:
-#             print word.string, word.tag, word.lemma
+#             print(word.string, word.tag, word.lemma)
 
 # Terminology:
 # - part-of-speech: the role that a word plays in a sentence: noun (NN), verb (VB), adjective, ...
@@ -31,7 +31,11 @@
 # The Text and Sentece classes are containers: 
 # no parsing functionality should be added to it.
 
-from itertools import izip, chain
+try:
+    from itertools import chain
+    from itertools import izip
+except:
+    izip = zip  # Python 3
 
 try:
     from config import SLASH
@@ -186,7 +190,7 @@ class Word(object):
         for i, tag in enumerate(self.sentence.token): # Default: [WORD, POS, CHUNK, PNP, RELATION, ANCHOR, LEMMA]
             if tag == WORD:
                 tags[i] = encode_entities(self.string)
-            elif tag == POS and self.type:
+            elif tag == POS or tag == "pos" and self.type:
                 tags[i] = self.type
             elif tag == CHUNK and ch and ch.type:
                 tags[i] = (self == ch[0] and B or I) + ch.type
@@ -207,13 +211,33 @@ class Word(object):
     def custom_tags(self):
         if not self._custom_tags: self._custom_tags = Tags(self)
         return self._custom_tags
-    
+
+    def next(self, type=None):
+        """ Returns the next word in the sentence with the given type.
+        """
+        i = self.index + 1
+        s = self.sentence
+        while i < len(s):
+            if type in (s[i].type, None):
+                return s[i]
+            i += 1
+
+    def previous(self, type=None):
+        """ Returns the next previous word in the sentence with the given type.
+        """
+        i = self.index - 1
+        s = self.sentence
+        while i > 0:
+            if type in (s[i].type, None):
+                return s[i]
+            i -= 1
+
     # User-defined tags are available as Word.[tag] attributes.
     def __getattr__(self, tag):
         d = self.__dict__.get("_custom_tags", None)
         if d and tag in d:
             return d[tag]
-        raise AttributeError, "Word instance has no attribute '%s'" % tag
+        raise AttributeError("Word instance has no attribute '%s'" % tag)
 
     # Word.string and unicode(Word) are Unicode strings.
     # repr(Word) is a Python string (with Unicode characters encoded).
@@ -448,18 +472,20 @@ class Chunk(object):
         """ Returns the next chunk in the sentence with the given type.
         """
         i = self.stop
-        while i < len(self.sentence):
-            if self.sentence[i].chunk is not None and type in (self.sentence[i].chunk.type, None):
-                return self.sentence[i].chunk
+        s = self.sentence
+        while i < len(s):
+            if s[i].chunk is not None and type in (s[i].chunk.type, None):
+                return s[i].chunk
             i += 1
 
     def previous(self, type=None):
         """ Returns the next previous chunk in the sentence with the given type.
         """
-        i = self.start-1
+        i = self.start - 1
+        s = self.sentence
         while i > 0:
-            if self.sentence[i].chunk is not None and type in (self.sentence[i].chunk.type, None):
-                return self.sentence[i].chunk
+            if s[i].chunk is not None and type in (s[i].chunk.type, None):
+                return s[i].chunk
             i -= 1
 
     # Chunk.string and unicode(Chunk) are Unicode strings.
@@ -733,6 +759,8 @@ class Sentence(object):
         for k, v in izip(tags, token.split("/")):
             if SLASH0 in v:
                 v = v.replace(SLASH, "/")
+            if k == "pos":
+                k = POS
             if k not in p:
                 custom[k] = None
             if v != OUTSIDE or k == WORD or k == LEMMA: # "type O negative" => "O" != OUTSIDE.
@@ -911,7 +939,7 @@ class Sentence(object):
             return self.words[index]
         if tag == LEMMA:
             return self.words[index].lemma
-        if tag == POS:
+        if tag == POS or tag == "pos":
             return self.words[index].type
         if tag == CHUNK:
             return self.words[index].chunk

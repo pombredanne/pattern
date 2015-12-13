@@ -248,7 +248,7 @@ class Word:
         import wordnet
         #warningKey = 'SENSE_DEPRECATION_WARNING'
         #if not wordnet.has_key(warningKey):
-        #    print 'Word.senses() has been deprecated.  Use Word.sense() instead.'
+        #    print('Word.senses() has been deprecated.  Use Word.sense() instead.')
         #    wordnet[warningKey] = 1
         return self.getSense()
     
@@ -573,7 +573,7 @@ class Sense:
         elif name == 'lexname':
             return self.synset.lexname
 	else:
-	    raise AttributeError, name
+	    raise AttributeError(name)
     
     def __str__(self):
 	"""Return a human-readable representation.
@@ -818,7 +818,7 @@ class Dictionary:
 	if word:
 	    return word
 	else:
-	    raise KeyError, "%s is not in the %s database" % (`form`, `pos`)
+	    raise KeyError("%s is not in the %s database" % (`form`, `pos`))
     
     def getSynset(self, offset):
 	pos = self.pos
@@ -878,7 +878,7 @@ class Dictionary:
 	    line = self.indexFile[index]
 	    return self.getWord(string.replace(line[:string.find(line, ' ')], '_', ' '), line)
 	else:
-	    raise TypeError, "%s is not a String or Int" % `index`
+	    raise TypeError("%s is not a String or Int" % `index`)
     
     #
     # Dictionary protocol
@@ -922,7 +922,7 @@ class Dictionary:
     
     def _testKeys(self):
 	"""Verify that index lookup can find each word in the index file."""
-	print "Testing: ", self
+	print("Testing: " + repr(self))
 	file = open(self.indexFile.file.name, _FILE_OPEN_MODE)
 	counter = 0
 	while 1:
@@ -931,13 +931,13 @@ class Dictionary:
 	    if line[0] != ' ':
 		key = string.replace(line[:string.find(line, ' ')], '_', ' ')
 		if (counter % 1000) == 0:
-		    print "%s..." % (key,),
+		    print("%s..." % (key,))
 		    import sys
 		    sys.stdout.flush()
 		counter = counter + 1
 		self[key]
 	file.close()
-	print "done."
+	print("done.")
 
 
 class _IndexFile:
@@ -1001,12 +1001,12 @@ class _IndexFile:
 		self.file.seek(self.nextOffset)
 		line = self.file.readline()
 		if line == "":
-		    raise IndexError, "index out of range"
+		    raise IndexError("index out of range")
 		self.nextIndex = self.nextIndex + 1
 		self.nextOffset = self.file.tell()
 	    return line
 	else:
-	    raise TypeError, "%s is not a String or Int" % `index`
+	    raise TypeError("%s is not a String or Int" % `index`)
 	
     #
     # Dictionary protocol
@@ -1048,7 +1048,7 @@ class _IndexFile:
     def _buildIndexCacheFile(self):
 	import shelve
 	import os
-	print "Building %s:" % (self.shelfname,),
+	print("Building %s:" % (self.shelfname,))
 	tempname = self.shelfname + ".temp"
 	try:
 	    indexCache = shelve.open(tempname)
@@ -1059,7 +1059,7 @@ class _IndexFile:
 		if not line: break
 		key = line[:string.find(line, ' ')]
 		if (count % 1000) == 0:
-		    print "%s..." % (key,),
+		    print("%s..." % (key,))
 		    import sys
 		    sys.stdout.flush()
 		indexCache[key] = line
@@ -1069,7 +1069,7 @@ class _IndexFile:
 	finally:
 	    try: os.remove(tempname)
 	    except: pass
-	print "done."
+	print("done.")
 	self.indexCache = shelve.open(self.shelfname, 'r')
 
 
@@ -1097,7 +1097,7 @@ getword, getsense, getsynset = getWord, getSense, getSynset
 
 def _requirePointerType(pointerType):
     if pointerType not in POINTER_TYPES:
-	raise TypeError, `pointerType` + " is not a pointer type"
+	raise TypeError(`pointerType` + " is not a pointer type")
     return pointerType
 
 def _compareInstances(a, b, fields):
@@ -1165,7 +1165,7 @@ def binarySearchFile(file, key, cache={}, cacheDepth=-1):
 	    offset, line = file.tell(), file.readline()
 	    if currentDepth < cacheDepth:
 		cache[middle] = (offset, line)
-        #print start, middle, end, offset, line,
+        #print(start, middle, end, offset, line)
 	if offset > end:
 	    assert end != middle - 1, "infinite loop"
 	    end = middle - 1
@@ -1396,13 +1396,13 @@ def _normalizePOS(pos):
     norm = _POSNormalizationTable.get(pos)
     if norm:
 	return norm
-    raise TypeError, `pos` + " is not a part of speech type"
+    raise TypeError(`pos` + " is not a part of speech type")
 
 def _dictionaryFor(pos):
     pos = _normalizePOS(pos)
     dict = _POStoDictionaryTable.get(pos)
     if dict == None:
-	raise RuntimeError, "The " + `pos` + " dictionary has not been created"
+	raise RuntimeError("The " + `pos` + " dictionary has not been created")
     return dict
 
 def buildIndexFiles():

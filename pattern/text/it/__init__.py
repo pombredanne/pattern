@@ -12,7 +12,7 @@ import os
 import sys
 
 try:
-    MODULE = os.path.dirname(os.path.abspath(__file__))
+    MODULE = os.path.dirname(os.path.realpath(__file__))
 except:
     MODULE = ""
 
@@ -37,6 +37,10 @@ from pattern.text.tree import (
 # Import sentiment analysis base classes.
 from pattern.text import (
     Sentiment, NOUN, VERB, ADJECTIVE, ADVERB
+)
+# Import spelling base class.
+from pattern.text import (
+    Spelling
 )
 # Import verb tenses.
 from pattern.text import (
@@ -126,7 +130,11 @@ class Parser(_Parser):
     def find_tokens(self, tokens, **kwargs):
         kwargs.setdefault("abbreviations", ABBREVIATIONS)
         kwargs.setdefault("replace", replacements)
-        return _Parser.find_tokens(self, tokens, **kwargs)
+        #return _Parser.find_tokens(self, tokens, **kwargs)
+        
+        s = _Parser.find_tokens(self, tokens, **kwargs)
+        s = [s.replace(" &contraction ;", u"'").replace("XXX -", "-") for s in s]
+        return s
 
     def find_lemmata(self, tokens, **kwargs):
         return find_lemmata(tokens)
@@ -139,14 +147,19 @@ class Parser(_Parser):
         return _Parser.find_tags(self, tokens, **kwargs)
 
 parser = Parser(
-     lexicon = os.path.join(MODULE, "it-lexicon.txt"), 
-  morphology = os.path.join(MODULE, "it-morphology.txt"), 
+     lexicon = os.path.join(MODULE, "it-lexicon.txt"),
+   frequency = os.path.join(MODULE, "it-frequency.txt"),
+  morphology = os.path.join(MODULE, "it-morphology.txt"),
      context = os.path.join(MODULE, "it-context.txt"),
      default = ("NN", "NNP", "CD"),
     language = "it"
 )
 
 lexicon = parser.lexicon # Expose lexicon.
+
+spelling = Spelling(
+        path = os.path.join(MODULE, "it-spelling.txt")
+)
 
 def tokenize(s, *args, **kwargs):
     """ Returns a list of sentences, where punctuation marks have been split from words.
@@ -176,6 +189,20 @@ def tag(s, tokenize=True, encoding="utf-8", **kwargs):
         for token in sentence:
             tags.append((token[0], token[1]))
     return tags
+
+def keywords(s, top=10, **kwargs):
+    """ Returns a sorted list of keywords in the given string.
+    """
+    return parser.find_keywords(s, **dict({
+        "frequency": parser.frequency,
+              "top": top,
+              "pos": ("NN",),
+           "ignore": ("rt",)}, **kwargs))
+
+def suggest(w):
+    """ Returns a list of (word, confidence)-tuples of spelling corrections.
+    """
+    return spelling.suggest(w)
 
 split = tree # Backwards compatibility.
 

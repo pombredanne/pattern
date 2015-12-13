@@ -16,7 +16,7 @@ from __init__ import WEIGHT, CENTRALITY, EIGENVECTOR, BETWEENNESS
 import os
 
 try:
-    MODULE = os.path.dirname(os.path.abspath(__file__))
+    MODULE = os.path.dirname(os.path.realpath(__file__))
 except:
     MODULE = ""
 
@@ -205,8 +205,8 @@ class Commonsense(Graph):
     field = semantic_field = taxonomy
 
 #g = Commonsense()
-#print g.nn("party", g.field("animal"))
-#print g.nn("creepy", g.field("animal"))
+#print(g.nn("party", g.field("animal")))
+#print(g.nn("creepy", g.field("animal")))
 
 #### COMMONSENSE DATA ##############################################################################
 

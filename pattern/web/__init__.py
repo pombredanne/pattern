@@ -11,15 +11,20 @@
 # smgllib.py is removed from Python 3, a warning is issued in Python 2.6+. Ignore for now.
 import warnings; warnings.filterwarnings(action='ignore', category=DeprecationWarning, module="sgmllib")
 
+import os
+import sys
 import threading
 import time
-import os
-import socket, urlparse, urllib, urllib2
+import socket, urlparse, urllib, urllib2, ssl
 import base64
 import htmlentitydefs
+import httplib
 import sgmllib
+import cookielib
 import re
 import xml.dom.minidom
+import unicodedata
+import string
 import StringIO
 import bisect
 import itertools
@@ -50,14 +55,72 @@ except:
     pass
 
 try:
-    MODULE = os.path.dirname(os.path.abspath(__file__))
+    MODULE = os.path.dirname(os.path.realpath(__file__))
 except:
     MODULE = ""
+    
+if sys.version > "3":
+    long = int
 
 #### UNICODE #######################################################################################
 # Latin-1 (ISO-8859-1) encoding is identical to Windows-1252 except for the code points 128-159:
 # Latin-1 assigns control codes in this range, Windows-1252 has characters, punctuation, symbols
 # assigned to these code points.
+
+GREMLINS = set([
+    0x0152, 0x0153, 0x0160, 0x0161, 0x0178, 0x017E, 0x017D, 0x0192, 0x02C6, 
+    0x02DC, 0x2013, 0x2014, 0x201A, 0x201C, 0x201D, 0x201E, 0x2018, 0x2019, 
+    0x2020, 0x2021, 0x2022, 0x2026, 0x2030, 0x2039, 0x203A, 0x20AC, 0x2122
+])
+
+def fix(s, ignore=""):
+    """ Returns a Unicode string that fixes common encoding problems (Latin-1, Windows-1252).
+        For example: fix("clichÃ©") => u"cliché".
+    """
+    # http://blog.luminoso.com/2012/08/20/fix-unicode-mistakes-with-python/
+    if not isinstance(s, unicode):
+        s = s.decode("utf-8")
+        # If this doesn't work,
+        # copy & paste string in a Unicode .txt, 
+        # and then pass open(f).read() to fix().
+    u = []
+    i = 0
+    for j, ch in enumerate(s):
+        if ch in ignore:
+            continue
+        if ord(ch) < 128: # ASCII
+            continue
+        if ord(ch) in GREMLINS:
+            ch = ch.encode("windows-1252")
+        else:
+            try:
+                ch = ch.encode("latin-1")
+            except:
+                ch = ch.encode("utf-8")
+        u.append(s[i:j].encode("utf-8"))
+        u.append(ch)
+        i = j + 1
+    u.append(s[i:].encode("utf-8"))
+    u = "".join(u)
+    u = u.decode("utf-8", "replace")
+    u = u.replace("\n", "\n ")
+    u = u.split(" ")
+    # Revert words that have the replacement character,
+    # i.e., fix("cliché") should not return u"clich�".
+    for i, (w1, w2) in enumerate(zip(s.split(" "), u)):
+        if u"\ufffd" in w2: # �
+            u[i] = w1
+    u = " ".join(u)
+    u = u.replace("\n ", "\n")
+    return u
+
+def latin(s):
+    """ Returns True if the string contains only Latin-1 characters
+        (no Chinese, Japanese, Arabic, Cyrillic, Hebrew, Greek, ...).
+    """
+    if not isinstance(s, unicode):
+        s = s.decode("utf-8")
+    return all(unicodedata.name(ch).startswith("LATIN") for ch in s if ch.isalpha())
 
 def decode_string(v, encoding="utf-8"):
     """ Returns the given value as a Unicode string (if possible).
@@ -89,7 +152,7 @@ u = decode_utf8 = decode_string
 s = encode_utf8 = encode_string
 
 # For clearer source code:
-bytestring = s
+bytestring = b = s
 
 #### ASYNCHRONOUS REQUEST ##########################################################################
 
@@ -116,7 +179,7 @@ class AsynchronousRequest(object):
         """
         try:
             self._response = function(*args, **kwargs)
-        except Exception, e:
+        except Exception as e:
             self._error = e
 
     def now(self):
@@ -213,8 +276,15 @@ def proxy(host, protocol="https"):
     return (host, protocol)
 
 class Error(Exception):
+    """ Base class for pattern.web errors.
+    """
     def __init__(self, *args, **kwargs):
-        Exception.__init__(self, *args); self.src=kwargs.pop("src", None)
+        Exception.__init__(self, *args)
+        self.src = kwargs.pop("src", None)
+        self.url = kwargs.pop("url", None)
+    @property
+    def headers(self):
+        return dict(self.src.headers.items())
 
 class URLError(Error):
     pass # URL contains errors (e.g. a missing t in htp://).
@@ -242,6 +312,8 @@ class HTTP429TooMayRequests(HTTPError):
     pass # Used by Twitter for rate limiting.
 class HTTP500InternalServerError(HTTPError):
     pass # Generic server error.
+class HTTP503ServiceUnavailable(HTTPError):
+    pass # Used by Bing for rate limiting.
 
 class URL(object):
 
@@ -339,14 +411,14 @@ class URL(object):
     def __getattr__(self, k):
         if k in self.__dict__ : return self.__dict__[k]
         if k in self.parts    : return self.__dict__["_parts"][k]
-        raise AttributeError, "'URL' object has no attribute '%s'" % k
+        raise AttributeError("'URL' object has no attribute '%s'" % k)
 
     def __setattr__(self, k, v):
         if k in self.__dict__ : self.__dict__[k] = u(v); return
         if k == "string"      : self._set_string(v); return
         if k == "query"       : self.parts[k] = v; return
         if k in self.parts    : self.__dict__["_parts"][k] = u(v); return
-        raise AttributeError, "'URL' object has no attribute '%s'" % k
+        raise AttributeError("'URL' object has no attribute '%s'" % k)
 
     def open(self, timeout=10, proxy=None, user_agent=USER_AGENT, referrer=REFERRER, authentication=None):
         """ Returns a connection to the url from which data can be retrieved with connection.read().
@@ -354,16 +426,20 @@ class URL(object):
             When an error occurs, raises a URLError (e.g. HTTP404NotFound).
         """
         url = self.string
-        # Use basic urllib.urlopen() instead of urllib2.urlopen() for local files.
+        # Handle local files with urllib.urlopen() instead of urllib2.urlopen().
         if os.path.exists(url):
             return urllib.urlopen(url)
-        # Get the query string as a separate parameter if method=POST.
+        # Handle method=POST with query string as a separate parameter.
         post = self.method == POST and self.querystring or None
         socket.setdefaulttimeout(timeout)
+        # Handle proxies and cookies.
+        handlers = []
         if proxy:
-            proxy = urllib2.ProxyHandler({proxy[1]: proxy[0]})
-            proxy = urllib2.build_opener(proxy, urllib2.HTTPHandler)
-            urllib2.install_opener(proxy)
+            handlers.append(urllib2.ProxyHandler({proxy[1]: proxy[0]}))
+        handlers.append(urllib2.HTTPCookieProcessor(cookielib.CookieJar()))
+        handlers.append(urllib2.HTTPHandler)
+        urllib2.install_opener(urllib2.build_opener(*handlers))
+        # Send request.
         try:
             request = urllib2.Request(bytestring(url), post, {
                         "User-Agent": user_agent,
@@ -374,25 +450,32 @@ class URL(object):
                 request.add_header("Authorization", "Basic %s" %
                     base64.encodestring('%s:%s' % authentication))
             return urllib2.urlopen(request)
-        except urllib2.HTTPError, e:
-            if e.code == 301: raise HTTP301Redirect(src=e)
-            if e.code == 400: raise HTTP400BadRequest(src=e)
-            if e.code == 401: raise HTTP401Authentication(src=e)
-            if e.code == 403: raise HTTP403Forbidden(src=e)
-            if e.code == 404: raise HTTP404NotFound(src=e)
-            if e.code == 420: raise HTTP420Error(src=e)
-            if e.code == 429: raise HTTP429TooMayRequests(src=e)
-            if e.code == 500: raise HTTP500InternalServerError(src=e)
-            raise HTTPError(src=e)
-        except socket.timeout, e:
-            raise URLTimeout(src=e)
-        except urllib2.URLError, e:
-            if e.reason == "timed out" \
-            or e.reason[0] in (36, "timed out"):
-                raise URLTimeout(src=e)
-            raise URLError(e.reason, src=e)
-        except ValueError, e:
-            raise URLError(src=e)
+        except urllib2.HTTPError as e:
+            if e.code == 301: raise HTTP301Redirect(src=e, url=url)
+            if e.code == 400: raise HTTP400BadRequest(src=e, url=url)
+            if e.code == 401: raise HTTP401Authentication(src=e, url=url)
+            if e.code == 403: raise HTTP403Forbidden(src=e, url=url)
+            if e.code == 404: raise HTTP404NotFound(src=e, url=url)
+            if e.code == 420: raise HTTP420Error(src=e, url=url)
+            if e.code == 429: raise HTTP429TooMayRequests(src=e, url=url)
+            if e.code == 500: raise HTTP500InternalServerError(src=e, url=url)
+            if e.code == 503: raise HTTP503ServiceUnavailable(src=e, url=url)
+            raise HTTPError(str(e), src=e, url=url)
+        except httplib.BadStatusLine as e:
+            raise HTTPError(str(e), src=e, url=url)
+        except socket.timeout as e:
+            raise URLTimeout(src=e, url=url)
+        except socket.error as e:
+            if "timed out" in str((e.args + ("", ""))[0]) \
+            or "timed out" in str((e.args + ("", ""))[1]):
+                raise URLTimeout(src=e, url=url)
+            raise URLError(str(e), src=e, url=url)
+        except urllib2.URLError as e:
+            if "timed out" in str(e.reason):
+                raise URLTimeout(src=e, url=url)
+            raise URLError(str(e), src=e, url=url)
+        except ValueError as e:
+            raise URLError(str(e), src=e, url=url)
 
     def download(self, timeout=10, cached=True, throttle=0, proxy=None, user_agent=USER_AGENT, referrer=REFERRER, authentication=None, unicode=False, **kwargs):
         """ Downloads the content at the given URL (by default it will be cached locally).
@@ -418,8 +501,8 @@ class URL(object):
         # Open a connection with the given settings, read it and (by default) cache the data.
         try:
             data = self.open(timeout, proxy, user_agent, referrer, authentication).read()
-        except socket.timeout, e:
-            raise URLTimeout(src=e)
+        except socket.timeout as e:
+            raise URLTimeout(src=e, url=self.string)
         if unicode is True:
             data = u(data)
         if cached:
@@ -438,7 +521,9 @@ class URL(object):
         try: self.open(timeout)
         except HTTP404NotFound:
             return False
-        except HTTPError, URLTimeoutError:
+        except HTTPError:
+            return True
+        except URLTimeout:
             return True
         except URLError:
             return False
@@ -525,9 +610,9 @@ def download(url=u"", method=GET, query={}, timeout=10, cached=True, throttle=0,
     return URL(url, method, query).download(timeout, cached, throttle, proxy, user_agent, referrer, authentication, unicode)
 
 #url = URL("http://user:pass@example.com:992/animal/bird?species#wings")
-#print url.parts
-#print url.query
-#print url.string
+#print(url.parts)
+#print(url.query)
+#print(url.string)
 
 #--- STREAMING URL BUFFER --------------------------------------------------------------------------
 
@@ -815,7 +900,7 @@ def encode_entities(string):
         For example, to display "<em>hello</em>" in a browser,
         we need to pass "&lt;em&gt;hello&lt;/em&gt;" (otherwise "hello" in italic is displayed).
     """
-    if isinstance(string, (str, unicode)):
+    if isinstance(string, basestring):
         string = RE_AMPERSAND.sub("&amp;", string)
         string = string.replace("<", "&lt;")
         string = string.replace(">", "&gt;")
@@ -830,14 +915,14 @@ def decode_entities(string):
     def replace_entity(match):
         hash, hex, name = match.group(1), match.group(2), match.group(3)
         if hash == "#" or name.isdigit():
-            if hex == '' :
+            if hex == "":
                 return unichr(int(name))                 # "&#38;" => "&"
-            if hex in ("x","X"):
-                return unichr(int('0x'+name, 16))        # "&#x0026;" = > "&"
+            if hex.lower() == "x":
+                return unichr(int("0x" + name, 16))      # "&#x0026;" = > "&"
         else:
             cp = htmlentitydefs.name2codepoint.get(name) # "&amp;" => "&"
-            return cp and unichr(cp) or match.group()    # "&foo;" => "&foo;"
-    if isinstance(string, (str, unicode)):
+            return unichr(cp) if cp else match.group()   # "&foo;" => "&foo;"
+    if isinstance(string, basestring):
         return RE_UNICODE.subn(replace_entity, string)[0]
     return string
 
@@ -891,6 +976,8 @@ def plaintext(html, keep=[], replace=blocks, linebreaks=2, indentation=False):
         - linebreaks  : the maximum amount of consecutive linebreaks,
         - indentation : keep left line indentation (tabs and spaces)?
     """
+    if isinstance(html, Element):
+        html = html.content
     if not keep.__contains__("script"):
         html = strip_javascript(html)
     if not keep.__contains__("style"):
@@ -925,18 +1012,30 @@ LATEST    = "latest"    # Sort results by most recent.
 
 class Result(dict):
 
-    def __init__(self, url):
+    def __init__(self, url, **kwargs):
         """ An item in a list of results returned by SearchEngine.search().
-            All dictionary entries are available as unicode string attributes.
-            - url     : the URL of the referred web content,
-            - title   : the title of the content at the URL,
-            - text    : the content text,
-            - language: the content language,
-            - author  : for news items and images, the author,
-            - date    : for news items, the publication date.
+            All dictionary keys are available as Unicode string attributes.
+            - id       : unique identifier,
+            - url      : the URL of the referred web content,
+            - title    : the title of the content at the URL,
+            - text     : the content text,
+            - language : the content language,
+            - author   : for news items and posts, the author,
+            - date     : for news items and posts, the publication date.
         """
         dict.__init__(self)
-        self.url   = url
+        self.url      = url
+        self.id       = kwargs.pop("id"       , u"")
+        self.title    = kwargs.pop("title"    , u"")
+        self.text     = kwargs.pop("text"     , u"")
+        self.language = kwargs.pop("language" , u"")
+        self.author   = kwargs.pop("author"   , u"")
+        self.date     = kwargs.pop("date"     , u"")
+        self.votes    = kwargs.pop("votes"    , 0) # (e.g., Facebook likes)
+        self.shares   = kwargs.pop("shares"   , 0) # (e.g., Twitter retweets)
+        self.comments = kwargs.pop("comments" , 0)
+        for k, v in kwargs.items():
+            self[k] = v
 
     @property
     def txt(self):
@@ -946,30 +1045,44 @@ class Result(dict):
     def description(self):
         return self.text # Backwards compatibility.
 
+    @property
+    def likes(self):
+        return self.votes
+        
+    @property
+    def retweets(self):
+        return self.shares
+
     def download(self, *args, **kwargs):
         """ Download the content at the given URL.
             By default it will be cached - see URL.download().
         """
         return URL(self.url).download(*args, **kwargs)
 
+    def _format(self, v):
+        if isinstance(v, str): # Store strings as unicode.
+            return u(v)
+        if v is None:
+            return u""
+        return v
+
     def __getattr__(self, k):
         return self.get(k, u"")
     def __getitem__(self, k):
         return self.get(k, u"")
     def __setattr__(self, k, v):
-        dict.__setitem__(self, u(k), v is not None and u(v) or u"") # Store strings as unicode.
+        self.__setitem__(k, v)
     def __setitem__(self, k, v):
-        dict.__setitem__(self, u(k), v is not None and u(v) or u"")
+        dict.__setitem__(self, u(k), self._format(v))
 
-    def setdefault(self, k, v):
-        dict.setdefault(self, u(k), u(v))
+    def setdefault(self, k, v=None):
+        return dict.setdefault(self, u(k), self._format(v))
+        
     def update(self, *args, **kwargs):
-        map = dict()
-        map.update(*args, **kwargs)
-        dict.update(self, [(u(k), u(v)) for k, v in map.items()])
+        dict.update(self, [(u(k), self._format(v)) for k, v in dict(*args, **kwargs).items()])
 
     def __repr__(self):
-        return "Result(%s)" % dict.__repr__(self)
+        return "Result(%s)" % repr(dict((k, v) for k, v in self.items() if v))
 
 class Results(list):
 
@@ -1089,10 +1202,12 @@ class Google(SearchEngine):
         kwargs.setdefault("cached", False)
         kwargs.setdefault("unicode", True)
         kwargs.setdefault("throttle", self.throttle)
+        if input == output:
+            return string
         try:
             data = url.download(**kwargs)
         except HTTP403Forbidden:
-            raise HTTP401Authentication, "Google translate API is a paid service"
+            raise HTTP401Authentication("Google translate API is a paid service")
         data = json.loads(data)
         data = data.get("data", {}).get("translations", [{}])[0].get("translatedText", "")
         data = decode_entities(data)
@@ -1112,7 +1227,7 @@ class Google(SearchEngine):
         try:
             data = url.download(**kwargs)
         except HTTP403Forbidden:
-            raise HTTP401Authentication, "Google translate API is a paid service"
+            raise HTTP401Authentication("Google translate API is a paid service")
         data = json.loads(data)
         data = data.get("data", {}).get("detections", [[{}]])[0][0]
         data = u(data.get("language")), float(data.get("confidence"))
@@ -1140,7 +1255,7 @@ class Yahoo(SearchEngine):
             "oauth_signature_method": "HMAC-SHA1"
         })
         url.query["oauth_signature"] = oauth.sign(url.string.split("?")[0], url.query,
-            method = GET,
+            method = url.method,
             secret = self.license[1]
         )
         return url
@@ -1164,7 +1279,7 @@ class Yahoo(SearchEngine):
             return Results(YAHOO, query, type)
         # 1) Create request URL.
         url = URL(url, method=GET, query={
-                 "q": query,
+                 "q": query.replace(" ", "+"),
              "start": 1 + (start-1) * count,
              "count": min(count, type==IMAGE and 35 or 50),
             "format": "json"
@@ -1182,7 +1297,7 @@ class Yahoo(SearchEngine):
         try:
             data = url.download(cached=cached, **kwargs)
         except HTTP401Authentication:
-            raise HTTP401Authentication, "Yahoo %s API is a paid service" % type
+            raise HTTP401Authentication("Yahoo %s API is a paid service" % type)
         except HTTP403Forbidden:
             raise SearchEngineLimitError
         data = json.loads(data)
@@ -1263,12 +1378,14 @@ class Bing(SearchEngine):
         try:
             data = url.download(cached=cached, **kwargs)
         except HTTP401Authentication:
-            raise HTTP401Authentication, "Bing %s API is a paid service" % type
+            raise HTTP401Authentication("Bing %s API is a paid service" % type)
+        except HTTP503ServiceUnavailable:
+            raise SearchEngineLimitError
         data = json.loads(data)
         data = data.get("d", {})
         data = data.get("results", [{}])[0]
         results = Results(BING, query, type)
-        results.total = int(data.get(src+"Total", 0))
+        results.total = int(data.get(src+"Total") or 0)
         for x in data.get(src, []):
             r = Result(url=None)
             r.url      = self.format(x.get("MediaUrl", x.get("Url")))
@@ -1394,25 +1511,26 @@ class DuckDuckGo(SearchEngine):
 DDG = DuckDuckGo
 
 #for r in DDG().search("cats"):
-#    print r.url
-#    print r.title # Can be used as a new query.
-#    print plaintext(r.text)
-#    print r.type  # REFERENCE, CATEGORY, DEFINITION, "people", "sports" ...
-#    print
+#    print(r.url)
+#    print(r.title) # Can be used as a new query.
+#    print(plaintext(r.text))
+#    print(r.type)  # REFERENCE, CATEGORY, DEFINITION, "people", "sports" ...
+#    print()
 
-#print DDG().definition("cat")
-#print DDG().spelling("catnpa")
+#print(DDG().definition("cat"))
+#print(DDG().spelling("catnpa"))
 
 #--- TWITTER ---------------------------------------------------------------------------------------
 # Twitter is an online social networking service and microblogging service,
 # that enables users to post and read text-based messages of up to 140 characters ("tweets").
 # https://dev.twitter.com/docs/api/1.1
 
-TWITTER         = "http://api.twitter.com/1.1/"
+TWITTER         = "https://api.twitter.com/1.1/"
 TWITTER_STREAM  = "https://stream.twitter.com/1.1/statuses/filter.json"
 TWITTER_STATUS  = "https://twitter.com/%s/status/%s"
 TWITTER_LICENSE = api.license["Twitter"]
 TWITTER_HASHTAG = re.compile(r"(\s|^)(#[a-z0-9_\-]+)", re.I)    # Word starts with "#".
+TWITTER_MENTION = re.compile(r"(\s|^)(@[a-z0-9_\-]+)", re.I)    # Word starts with "@".
 TWITTER_RETWEET = re.compile(r"(\s|^RT )(@[a-z0-9_\-]+)", re.I) # Word starts with "RT @".
 
 class Twitter(SearchEngine):
@@ -1431,7 +1549,7 @@ class Twitter(SearchEngine):
             "oauth_signature_method": "HMAC-SHA1"
         })
         url.query["oauth_signature"] = oauth.sign(url.string.split("?")[0], url.query,
-            method = GET,
+            method = url.method,
             secret = self.license[1],
              token = self.license[2][1]
         )
@@ -1448,13 +1566,16 @@ class Twitter(SearchEngine):
             raise SearchEngineTypeError
         if not query or count < 1 or (isinstance(start, (int, long, float)) and start < 1):
             return Results(TWITTER, query, type)
-        if isinstance(start, (int, long, float)) and start < 10000:
-            id = (query, kwargs.get("geo"), kwargs.get("date"), int(start)-1, count)
-            id = self._pagination.pop(id, "")
-        if isinstance(start, (int, long, float)):
-            id = int(start) - 1
-        else:
+        if not isinstance(start, (int, long, float)):
             id = int(start) - 1 if start and start.isdigit() else ""
+        else:
+            if start == 1:
+                self._pagination = {}
+            if start <= 10000:
+                id = (query, kwargs.get("geo"), kwargs.get("date"), int(start)-1, count)
+                id = self._pagination.get(id, "")
+            else:
+                id = int(start) - 1
         # 1) Construct request URL.
         url = URL(TWITTER + "search/tweets.json?", method=GET)
         url.query = {
@@ -1493,8 +1614,15 @@ class Twitter(SearchEngine):
             r.text     = self.format(x.get("text"))
             r.date     = self.format(x.get("created_at"))
             r.author   = self.format(x.get("user", {}).get("screen_name"))
-            r.profile  = self.format(x.get("user", {}).get("profile_image_url")) # Profile picture URL.
             r.language = self.format(x.get("metadata", {}).get("iso_language_code"))
+            r.shares   = self.format(x.get("retweet_count", 0))
+            r.profile  = self.format(x.get("user", {}).get("profile_image_url")) # Profile picture URL.
+            # Fetch original status if retweet is truncated (i.e., ends with "...").
+            rt = x.get("retweeted_status", None)
+            if rt:
+                comment = re.search(r"^(.*? )RT", r.text)
+                comment = comment.group(1) if comment else ""
+                r.text = self.format("RT @%s: %s" % (rt["user"]["screen_name"], rt["text"]))
             results.append(r)
         # Twitter.search(start=id, count=10) takes a tweet.id,
         # and returns 10 results that are older than this id.
@@ -1502,27 +1630,69 @@ class Twitter(SearchEngine):
         # However, new tweets may arrive quickly,
         # so that by the time Twitter.search(start=2) is called,
         # it will yield results from page 1 (or even newer results).
-        # For backward compatibility, we keep a one-time page cache,
+        # For backward compatibility, we keep page cache,
         # that remembers the last id for a "page" for a given query,
         # when called in a loop.
         #
         # Store the last id retrieved.
         # If search() is called again with start+1, start from this id.
-        if isinstance(start, (int, long, float)) and results:
-            id = (query, kwargs.get("geo"), kwargs.get("date"), int(start), count)
-            self._pagination[id] = str(int(results[-1].id) - 1)
+        if isinstance(start, (int, long, float)):
+            k = (query, kwargs.get("geo"), kwargs.get("date"), int(start), count)
+            if results:  
+                self._pagination[k] = str(int(results[-1].id) - 1) 
+            else:
+                self._pagination[k] = id
         return results
+        
+    def profile(self, query, start=1, count=10, **kwargs):
+        """ Returns a list of results for the given author id, alias or search query.
+        """
+        # 1) Construct request URL.
+        url = URL(TWITTER + "users/search.json?", method=GET, query={
+               "q": query,
+            "page": start,
+           "count": count
+        })
+        url = self._authenticate(url)
+        # 2) Parse JSON response.
+        kwargs.setdefault("cached", True)
+        kwargs.setdefault("unicode", True)
+        kwargs.setdefault("throttle", self.throttle)
+        try:
+            data = URL(url).download(**kwargs)
+            data = json.loads(data)
+        except HTTP400BadRequest:
+            return []
+        return [
+            Result(url = "https://www.twitter.com/" + x.get("screen_name", ""),
+                    id = x.get("id_str", ""),              # 14898655
+                handle = x.get("screen_name", ""),         # tom_de_smedt
+                  name = x.get("name", ""),                # Tom De Smedt
+                  text = x.get("description", ""),         # Artist, scientist, software engineer
+              language = x.get("lang", ""),                # en
+                  date = x.get("created_at"),              # Sun May 10 10:00:00
+                locale = x.get("location", ""),            # Belgium
+               picture = x.get("profile_image_url", ""),   # http://pbs.twimg.com/...
+               friends = int(x.get("followers_count", 0)), # 100
+                 posts = int(x.get("statuses_count", 0))   # 100
+            ) for x in data
+        ]
 
     def trends(self, **kwargs):
         """ Returns a list with 10 trending topics on Twitter.
         """
+        # 1) Construct request URL.
         url = URL("https://api.twitter.com/1.1/trends/place.json?id=1")
         url = self._authenticate(url)
+        # 2) Parse JSON response.
         kwargs.setdefault("cached", False)
         kwargs.setdefault("unicode", True)
         kwargs.setdefault("throttle", self.throttle)
-        data = url.download(**kwargs)
-        data = json.loads(data)
+        try:
+            data = url.download(**kwargs)
+            data = json.loads(data)
+        except HTTP400BadRequest:
+            return []
         return [u(x.get("name")) for x in data[0].get("trends", [])]
 
     def stream(self, query, **kwargs):
@@ -1552,8 +1722,15 @@ class TwitterStream(Stream):
             r.text     = self.format(x.get("text"))
             r.date     = self.format(x.get("created_at"))
             r.author   = self.format(x.get("user", {}).get("screen_name"))
-            r.profile  = self.format(x.get("user", {}).get("profile_image_url"))
             r.language = self.format(x.get("metadata", {}).get("iso_language_code"))
+            r.shares   = self.format(x.get("retweet_count", 0))
+            r.profile  = self.format(x.get("user", {}).get("profile_image_url")) # Profile picture URL.
+            # Fetch original status if retweet is truncated (i.e., ends with "...").
+            rt = x.get("retweeted_status", None)
+            if rt:
+                comment = re.search(r"^(.*? )RT", r.text)
+                comment = comment.group(1) if comment else ""
+                r.text = self.format("RT @%s: %s" % (rt["user"]["screen_name"], rt["text"]))
             return r
 
 def author(name):
@@ -1567,6 +1744,11 @@ def hashtags(string):
     """
     return [b for a, b in TWITTER_HASHTAG.findall(string)]
 
+def mentions(string):
+    """ Returns a list of mentions (words starting with a @author) from a tweet.
+    """
+    return [b for a, b in TWITTER_MENTION.findall(string)]
+
 def retweets(string):
     """ Returns a list of retweets (words starting with a RT @author) from a tweet.
     """
@@ -1575,27 +1757,27 @@ def retweets(string):
 #engine = Twitter()
 #for i in range(2):
 #    for tweet in engine.search("cat nap", cached=False, start=i+1, count=10):
-#        print
-#        print tweet.id
-#        print tweet.url
-#        print tweet.text
-#        print tweet.author
-#        print tweet.profile
-#        print tweet.language
-#        print tweet.date
-#        print hashtags(tweet.text)
-#        print retweets(tweet.text)
+#        print()
+#        print(tweet.id)
+#        print(tweet.url)
+#        print(tweet.text)
+#        print(tweet.author)
+#        print(tweet.profile)
+#        print(tweet.language)
+#        print(tweet.date)
+#        print(hashtags(tweet.text))
+#        print(retweets(tweet.text))
 
 #stream = Twitter().stream("cat")
 #for i in range(10):
-#    print i
+#    print(i)
 #    stream.update()
 #    for tweet in reversed(stream):
-#        print tweet.id
-#        print tweet.text
-#        print tweet.url
-#        print tweet.language
-#    print
+#        print(tweet.id)
+#        print(tweet.text)
+#        print(tweet.url)
+#        print(tweet.language)
+#    print()
 #stream.clear()
 
 #--- MEDIAWIKI -------------------------------------------------------------------------------------
@@ -1623,6 +1805,9 @@ MEDIAWIKI_DISAMBIGUATION = "<a href=\"/wiki/Help:Disambiguation\" title=\"Help:D
 # Pattern to identify references, e.g. [12]
 MEDIAWIKI_REFERENCE = r"\s*\[[0-9]{1,3}\]"
 
+# Mediawiki.search(type=ALL).
+ALL = "all"
+
 class MediaWiki(SearchEngine):
 
     def __init__(self, license=None, throttle=5.0, language="en"):
@@ -1644,19 +1829,20 @@ class MediaWiki(SearchEngine):
         return MediaWikiTable
 
     def __iter__(self):
-        return self.all()
+        return self.articles()
 
-    def all(self, **kwargs):
+    def articles(self, **kwargs):
         """ Returns an iterator over all MediaWikiArticle objects.
             Optional parameters can include those passed to
-            MediaWiki.list(), MediaWiki.search() and URL.download().
+            MediaWiki.index(), MediaWiki.search() and URL.download().
         """
-        for title in self.list(**kwargs):
+        for title in self.index(**kwargs):
             yield self.search(title, **kwargs)
 
-    articles = all
+    # Backwards compatibility.
+    all = articles
 
-    def list(self, namespace=0, start=None, count=100, cached=True, **kwargs):
+    def index(self, namespace=0, start=None, count=100, cached=True, **kwargs):
         """ Returns an iterator over all article titles (for a given namespace id).
         """
         kwargs.setdefault("unicode", True)
@@ -1683,25 +1869,60 @@ class MediaWiki(SearchEngine):
             start = data.get("query-continue", {}).get("allpages", {})
             start = start.get("apcontinue", start.get("apfrom", -1))
         raise StopIteration
+    
+    # Backwards compatibility.
+    list = index
 
-    def search(self, query, type=SEARCH, start=1, count=1, sort=RELEVANCY, size=None, cached=True, **kwargs):
+    def search(self, query, type=SEARCH, start=1, count=10, sort=RELEVANCY, size=None, cached=True, **kwargs):
+        """ With type=SEARCH, returns a MediaWikiArticle for the given query (case-sensitive).
+            With type=ALL, returns a list of results. 
+            Each result.title is the title of an article that contains the given query.
+        """
+        if type not in (SEARCH, ALL, "*"):
+            raise SearchEngineTypeError
+        if type == SEARCH: # Backwards compatibility.
+            return self.article(query, cached=cached, **kwargs)
+        if not query or start < 1 or count < 1:
+            return Results(self._url, query, type)
+        # 1) Construct request URL (e.g., Wikipedia for a given language).
+        url = URL(self._url, method=GET, query={
+            "action": "query",
+              "list": "search",
+          "srsearch": query,
+          "sroffset": (start - 1) * count,
+           "srlimit": min(count, 100),
+            "srprop": "snippet",
+            "format": "json"
+        })
+        # 2) Parse JSON response.
+        kwargs.setdefault("unicode", True)
+        kwargs.setdefault("throttle", self.throttle)
+        data = url.download(cached=cached, **kwargs)
+        data = json.loads(data)
+        data = data.get("query", {})
+        results = Results(self._url, query, type)
+        results.total = int(data.get("searchinfo", {}).get("totalhits", 0))
+        for x in data.get("search", []):
+            u = "http://%s/wiki/%s" % (URL(self._url).domain, x.get("title").replace(" ", "_"))
+            r = Result(url=u)
+            r.id    = self.format(x.get("title"))
+            r.title = self.format(x.get("title"))
+            r.text  = self.format(plaintext(x.get("snippet")))
+            results.append(r)
+        return results
+
+    def article(self, query, cached=True, **kwargs):
         """ Returns a MediaWikiArticle for the given query.
             The query is case-sensitive, for example on Wikipedia:
             - "tiger" = Panthera tigris,
             - "TIGER" = Topologically Integrated Geographic Encoding and Referencing.
         """
-        if type != SEARCH:
-            raise SearchEngineTypeError
-        if count < 1:
-            return None
-        # 1) Construct request URL (e.g., Wikipedia for a given language).
         url = URL(self._url, method=GET, query={
             "action": "parse",
               "page": query.replace(" ", "_"),
          "redirects": 1,
             "format": "json"
         })
-        # 2) Parse JSON response.
         kwargs.setdefault("unicode", True)
         kwargs.setdefault("timeout", 30) # Parsing the article takes some time.
         kwargs.setdefault("throttle", self.throttle)
@@ -1724,6 +1945,7 @@ class MediaWiki(SearchEngine):
              categories = [x["*"] for x in data.get("categories", [])],
                external = [x for x in data.get("externallinks", [])],
                   media = [x for x in data.get("images", [])],
+              redirects = [x for x in data.get("redirects", [])],
               languages = dict([(x["lang"], x["*"]) for x in data.get("langlinks", [])]),
               language  = self.language,
                  parser = self, **kwargs)
@@ -1780,6 +2002,7 @@ class MediaWikiArticle(object):
         self.disambiguation = disambiguation # True when the article is a disambiguation page.
         self.languages      = languages      # Dictionary of (language, article)-items, e.g. Cat => ("nl", "Kat")
         self.language       = kwargs.get("language", "en")
+        self.redirects      = kwargs.get("redirects", [])
         self.parser         = kwargs.get("parser", MediaWiki())
         for k, v in kwargs.items():
             setattr(self, k, v)
@@ -1840,6 +2063,10 @@ class MediaWikiArticle(object):
     @property
     def html(self):
         return self.source
+        
+    @property
+    def src(self):
+        return self.source
 
     @property
     def string(self):
@@ -1860,6 +2087,7 @@ class MediaWikiSection(object):
         self._start   = start   # Section start index in MediaWikiArticle.string.
         self._stop    = stop    # Section stop index in MediaWikiArticle.string.
         self._level   = level   # Section depth (main title + intro = level 0).
+        self._links   = None
         self._tables  = None
 
     def plaintext(self, **kwargs):
@@ -1872,6 +2100,10 @@ class MediaWikiSection(object):
     @property
     def html(self):
         return self.source
+        
+    @property
+    def src(self):
+        return self.source
 
     @property
     def string(self):
@@ -1882,9 +2114,22 @@ class MediaWikiSection(object):
         # ArticleSection.string, minus the title.
         s = self.plaintext()
         t = plaintext(self.title)
-        if s == t or (len(s) > len(t)) and s.startswith(t) and s[len(t)] not in (",", " "):
+        if s == t or (len(s) > len(t)) and s.startswith(t) and s[len(t)] not in string.punctuation + " ":
             return s[len(t):].lstrip()
         return s
+
+    @property
+    def links(self, path="/wiki/"):
+        """ Yields a list of Wikipedia links in this section. Similar
+            in functionality to MediaWikiArticle.links.
+        """
+        if self._links is None:
+            a = HTMLLinkParser().parse(self.source)
+            a = (decode_url(a.url) for a in a)
+            a = (a[len(path):].replace("_", " ") for a in a if a.startswith(path))
+            a = (a for a in a if not _mediawiki_namespace.match(a))
+            self._links = sorted(set(a))
+        return self._links
 
     @property
     def tables(self):
@@ -1940,6 +2185,10 @@ class MediaWikiTable(object):
 
     @property
     def html(self):
+        return self.source
+        
+    @property
+    def src(self):
         return self.source
 
     @property
@@ -2010,7 +2259,7 @@ class WikipediaTable(MediaWikiTable):
 
 #article = Wikipedia().search("cat")
 #for section in article.sections:
-#    print "  "*(section.level-1) + section.title
+#    print("  "*(section.level-1) + section.title)
 #if article.media:
 #    data = article.download(article.media[2])
 #    f = open(article.media[2], "w")
@@ -2018,7 +2267,12 @@ class WikipediaTable(MediaWikiTable):
 #    f.close()
 #
 #article = Wikipedia(language="nl").search("borrelnootje")
-#print article.string
+#print(article.string)
+
+#for result in Wikipedia().search("\"cat's\"", type="*"):
+#    print(result.title)
+#    print(result.text)
+#    print()
 
 #--- MEDIAWIKI: WIKTIONARY -------------------------------------------------------------------------
 # Wiktionary is a collaborative project to produce a free-content multilingual dictionary.
@@ -2094,16 +2348,16 @@ class Wikia(MediaWiki):
     def MediaWikiTable(self):
         return WikiaTable
 
-    def all(self, **kwargs):
+    def articles(self, **kwargs):
         if kwargs.pop("batch", True):
             # We can take advantage of Wikia's search API to reduce bandwith.
             # Instead of executing a query to retrieve each article,
             # we query for a batch of (10) articles.
-            iterator = self.list(_id="pageid", **kwargs)
+            iterator = self.index(_id="pageid", **kwargs)
             while True:
                 batch, done = [], False
                 try:
-                    for i in range(10): batch.append(iterator.next())
+                    for i in range(10): batch.append(next(iterator))
                 except StopIteration:
                     done = True # No more articles, finish batch and raise StopIteration.
                 url = URL(self._url.replace("api.php", "wikia.php"), method=GET, query={
@@ -2121,7 +2375,7 @@ class Wikia(MediaWiki):
                     yield WikiaArticle(title=x.get("title", ""), source=x.get("html", ""))
                 if done:
                     raise StopIteration
-        for title in self.list(**kwargs):
+        for title in self.index(**kwargs):
             yield self.search(title, **kwargs)
 
 class WikiaArticle(MediaWikiArticle):
@@ -2212,8 +2466,8 @@ class DBPedia(SearchEngine):
         try:
             data = URL(url).download(cached=cached, timeout=30, **kwargs)
             data = json.loads(data)
-        except HTTP400BadRequest, e:
-            raise DBPediaQueryError, e.src.read().splitlines()[0]
+        except HTTP400BadRequest as e:
+            raise DBPediaQueryError(e.src.read().splitlines()[0])
         except HTTP403Forbidden:
             raise SearchEngineLimitError
         results = Results(DBPEDIA, url.query, type)
@@ -2322,8 +2576,8 @@ class FlickrResult(Result):
 
 #images = Flickr().search("kitten", count=10, size=SMALL)
 #for img in images:
-#    print bytestring(img.description)
-#    print img.url
+#    print(bytestring(img.description))
+#    print(img.url)
 #
 #data = img.download()
 #f = open("kitten"+extension(img.url), "wb")
@@ -2357,11 +2611,11 @@ class Facebook(SearchEngine):
         # With this license, we can view public content.
         # To view more information, we need a "user access token" as license key.
         # This token can be retrieved manually from:
-        #  http://www.clips.ua.ac.be/media/pattern-fb.html
+        #  http://www.clips.ua.ac.be/pattern-facebook
         # Or parsed from this URL:
         #  https://graph.facebook.com/oauth/authorize?type=user_agent
         #   &client_id=332061826907464
-        #   &redirect_uri=http%3A%2F%2Fwww.clips.ua.ac.be/media/pattern-facebook-token.html
+        #   &redirect_uri=http://www.clips.ua.ac.be/pattern-facebook
         #   &scope=read_stream,user_birthday,user_likes,user_photos,friends_birthday,friends_likes
         # The token is valid for a limited duration.
         return URL(FACEBOOK + "oauth/access_token?", query={
@@ -2382,6 +2636,7 @@ class Facebook(SearchEngine):
         # Facebook.search(type=NEWS) returns posts for the given author (id | alias | "me").
         # Facebook.search(type=COMMENTS) returns comments for the given post id.
         # Facebook.search(type=LIKES) returns authors for the given author, post or comments.
+        # Facebook.search(type=FRIENDS) returns authors for the given author.
         # An author is a Facebook user or other entity (e.g., a product page).
         if type not in (SEARCH, NEWS, COMMENTS, LIKES, FRIENDS):
             raise SearchEngineTypeError
@@ -2414,7 +2669,7 @@ class Facebook(SearchEngine):
             })
         if type in (SEARCH, NEWS, FEED):
             url.query["fields"] = ",".join((
-                "id", "from", "name", "story", "message", "link", "picture", "created_time", 
+                "id", "from", "name", "story", "message", "link", "picture", "created_time", "shares", 
                 "comments.limit(1).summary(true)", 
                    "likes.limit(1).summary(true)"
             ))
@@ -2431,27 +2686,21 @@ class Facebook(SearchEngine):
         results.total = None
         for x in data.get("data", []):
             r = FacebookResult(url=None)
-            r.id   = self.format(x.get("id"))
-            r.url  = self.format(x.get("link"))
-            r.text = self.format(x.get("story", x.get("message", x.get("name"))))
-            r.date = self.format(x.get("created_time"))
-            # Store likes & comments count as int, author as (id, name)-tuple
-            # (by default Result will store everything as Unicode strings).
-            s = lambda r, k, v: dict.__setitem__(r, k, v)
-            s(r, "likes", \
-                     self.format(x.get("like_count", x.get("likes", {}).get("summary", {}).get("total_count", 0))) + 0)
-            s(r, "comments", \
-                     self.format(x.get("comments", {}).get("summary", {}).get("total_count", 0)) + 0)
-            s(r, "author",  (
-                   u(self.format(x.get("from", {}).get("id", ""))),
-                   u(self.format(x.get("from", {}).get("name", "")))))
+            r.id       = self.format(x.get("id"))
+            r.url      = self.format(x.get("link"))
+            r.text     = self.format(x.get("story", x.get("message", x.get("name"))))
+            r.date     = self.format(x.get("created_time"))
+            r.votes    = self.format(x.get("like_count", x.get("likes", {}).get("summary", {}).get("total_count", 0)) + 0)
+            r.shares   = self.format(x.get("shares", {}).get("count", 0))
+            r.comments = self.format(x.get("comments", {}).get("summary", {}).get("total_count", 0) + 0)
+            r.author   = self.format(x.get("from", {}).get("id", "")), \
+                         self.format(x.get("from", {}).get("name", ""))
             # Set Result.text to author name for likes.
             if type in (LIKES, FRIENDS):
-                s(r, "author", (
-                   u(self.format(x.get("id", ""))),
-                   u(self.format(x.get("name", "")))))
-                r.text = \
-                     self.format(x.get("name"))
+                r.author = \
+                   self.format(x.get("id", "")), \
+                   self.format(x.get("name", ""))
+                r.text = self.format(x.get("name"))
             # Set Result.url to full-size image.
             if re.match(r"^http(s?)://www\.facebook\.com/photo", r.url) is not None:
                 r.url = x.get("picture", "").replace("_s", "_b") or r.url
@@ -2462,26 +2711,31 @@ class Facebook(SearchEngine):
         return results
 
     def profile(self, id=None, **kwargs):
-        """ For the given author id or alias,
-            returns a (id, name, date of birth, gender, locale, likes)-tuple.
+        """ Returns a Result for the given author id or alias.
         """
+        # 1) Construct request URL.
         url = FACEBOOK + (u(id or "me")).replace(FACEBOOK, "")
         url = URL(url, method=GET, query={"access_token": self.license})
-        kwargs.setdefault("cached", False)
+        kwargs.setdefault("cached", True)
         kwargs.setdefault("unicode", True)
         kwargs.setdefault("throttle", self.throttle)
+        # 2) Parse JSON response.
         try:
             data = URL(url).download(**kwargs)
             data = json.loads(data)
         except HTTP400BadRequest:
             raise HTTP401Authentication
-        return (
-            u(data.get("id", "")),
-            u(data.get("name", "")),
-            u(data.get("birthday", "")),
-            u(data.get("gender", "")[:1]),
-            u(data.get("locale", "")),
-          int(data.get("likes", 0)) # For pages.
+        return Result(
+                id = data.get("id", ""),                   # 123456...
+               url = data.get("link", ""),                 # https://www.facebook.com/tomdesmedt
+            handle = data.get("username", ""),             # tomdesmedt
+              name = data.get("name"),                     # Tom De Smedt
+              text = data.get("description", ""),          # Artist, scientist, software engineer
+          language = data.get("locale", "").split("_")[0], # en_US
+              date = data.get("birthday", ""),             # 10/10/1000
+            gender = data.get("gender", "")[:1],           # m
+            locale = data.get("hometown", {}).get("name", ""),
+             votes = int(data.get("likes", 0)) # (for product pages)
         )
         
     page = profile
@@ -2491,9 +2745,9 @@ class Facebook(SearchEngine):
 # http://connect.productwiki.com/connect-api/
 
 PRODUCTWIKI = "http://api.productwiki.com/connect/api.aspx"
-PRODUCTWIKI_LICENSE = api.license["Products"]
+PRODUCTWIKI_LICENSE = api.license["ProductWiki"]
 
-class Products(SearchEngine):
+class ProductWiki(SearchEngine):
 
     def __init__(self, license=None, throttle=5.0, language=None):
         SearchEngine.__init__(self, license or PRODUCTWIKI_LICENSE, throttle, language)
@@ -2516,7 +2770,7 @@ class Products(SearchEngine):
         url = URL(url, method=GET, query={
                "key": self.license or "",
                  "q": query,
-             "page" : start,
+              "page": start,
                 "op": "search",
             "fields": "proscons", # "description,proscons" is heavy.
             "format": "json"
@@ -2544,11 +2798,14 @@ class Products(SearchEngine):
         results.sort(key=lambda r: r.score, reverse=True)
         return results
 
-#for r in Products().search("tablet"):
-#    print r.title
-#    print r.score
-#    print r.reviews
-#    print
+# Backwards compatibility.
+Products = ProductWiki
+
+#for r in ProductWiki().search("tablet"):
+#    print(r.title)
+#    print(r.score)
+#    print(r.reviews)
+#    print()
 
 #--- NEWS FEED -------------------------------------------------------------------------------------
 # Based on the Universal Feed Parser by Mark Pilgrim:
@@ -2604,11 +2861,11 @@ feeds = {
 }
 
 #for r in Newsfeed().search(feeds["Nature"]):
-#    print r.title
-#    print r.author
-#    print r.url
-#    print plaintext(r.text)
-#    print
+#    print(r.title)
+#    print(r.author)
+#    print(r.url)
+#    print(plaintext(r.text))
+#    print()
 
 #--- QUERY -----------------------------------------------------------------------------------------
 
@@ -2644,7 +2901,7 @@ def query(string, service=GOOGLE, **kwargs):
                 kw[a] = kwargs.pop(a)
         return engine(kw).search(string, **kwargs)
     except UnboundLocalError:
-        raise SearchEngineError, "unknown search engine '%s'" % service
+        raise SearchEngineError("unknown search engine '%s'" % service)
 
 #--- WEB SORT --------------------------------------------------------------------------------------
 
@@ -2659,7 +2916,7 @@ SERVICES = {
     FACEBOOK  : Facebook
 }
 
-def sort(terms=[], context="", service=GOOGLE, license=None, strict=True, reverse=False, **kwargs):
+def sort(terms=[], context="", service=GOOGLE, license=None, strict=True, prefix=False, **kwargs):
     """ Returns a list of (percentage, term)-tuples for the given list of terms.
         Sorts the terms in the list according to search result count.
         When a context is defined, sorts according to relevancy to the context, e.g.:
@@ -2674,17 +2931,18 @@ def sort(terms=[], context="", service=GOOGLE, license=None, strict=True, revers
     service = SERVICES.get(service, SearchEngine)(license, language=kwargs.pop("language", None))
     R = []
     for word in terms:
-        q = reverse and context+" "+word or word+" "+context
+        q = prefix and (context + " " + word) or (word + " " + context)
         q.strip()
         q = strict and "\"%s\"" % q or q
-        r = service.search(q, count=1, **kwargs)
+        t = service in (WIKIPEDIA, WIKIA) and "*" or SEARCH
+        r = service.search(q, type=t, count=1, **kwargs)
         R.append(r)
     s = float(sum([r.total or 1 for r in R])) or 1.0
     R = [((r.total or 1)/s, r.query) for r in R]
-    R = sorted(R, reverse=True)
+    R = sorted(R, reverse=kwargs.pop("reverse", True))
     return R
 
-#print sort(["black", "happy"], "darth vader", GOOGLE)
+#print(sort(["black", "happy"], "darth vader", GOOGLE))
 
 #### DOCUMENT OBJECT MODEL #########################################################################
 # The Document Object Model (DOM) is a cross-platform and language-independent convention
@@ -2756,12 +3014,18 @@ class Node(object):
     def previous_sibling(self):
         return self._wrap(self._p.previousSibling)
 
-    next, previous = next_sibling, previous_sibling
+    next, prev, previous = \
+        next_sibling, previous_sibling, previous_sibling
 
     def traverse(self, visit=lambda node: None):
         """ Executes the visit function on this node and each of its child nodes.
         """
         visit(self); [node.traverse(visit) for node in self.children]
+        
+    def remove(self, child):
+        """ Removes the given child node (and all nested nodes).
+        """
+        child._p.extract()
 
     def __nonzero__(self):
         return True
@@ -2779,6 +3043,9 @@ class Node(object):
         return bytestring(self.__unicode__())
     def __unicode__(self):
         return u(self._p)
+        
+    def __call__(self, *args, **kwargs):
+        pass
 
 #--- TEXT ------------------------------------------------------------------------------------------
 
@@ -2842,7 +3109,7 @@ class Element(Node):
         """
         return u(self._p)
 
-    html = source
+    html = src = source
 
     def get_elements_by_tagname(self, v):
         """ Returns a list of nested Elements with the given tag name.
@@ -2892,7 +3159,7 @@ class Element(Node):
             return self.__dict__[k]
         if k in self.attributes:
             return self.attributes[k]
-        raise AttributeError, "'Element' object has no attribute '%s'" % k
+        raise AttributeError("'Element' object has no attribute '%s'" % k)
 
     def __contains__(self, v):
         if isinstance(v, Element):
@@ -2941,29 +3208,36 @@ DOM = Document
 
 #article = Wikipedia().search("Document Object Model")
 #dom = DOM(article.html)
-#print dom.get_element_by_id("References").source
-#print [element.attributes["href"] for element in dom.get_elements_by_tagname("a")]
-#print dom.get_elements_by_tagname("p")[0].next.previous.children[0].parent.__class__
-#print
+#print(dom.get_element_by_id("References").source)
+#print([element.attributes["href"] for element in dom.get_elements_by_tagname("a")])
+#print(dom.get_elements_by_tagname("p")[0].next.previous.children[0].parent.__class__)
+#print()
 
 #--- DOM CSS SELECTORS -----------------------------------------------------------------------------
 # CSS selectors are pattern matching rules (or selectors) to select elements in the DOM.
 # CSS selectors may range from simple element tag names to rich contextual patterns.
 # http://www.w3.org/TR/CSS2/selector.html
 
-# "*"                =  <div>, <p>, ...                (all elements)
-# "*#x"              =  <div id="x">, <p id="x">, ...  (all elements with id="x")
-# "div#x"            =  <div id="x">                   (<div> elements with id="x")
-# "div.x"            =  <div class="x">                (<div> elements with class="x")
-# "div[class='x']"   =  <div class="x">                (<div> elements with attribute "class"="x")
-# "div:first-child"  =  <div><a>1st<a><a></a></div>    (first child inside a <div>)
-# "div a"            =  <div><p><a></a></p></div>      (all <a>'s inside a <div>)
-# "div, a"           =  <div>, <a>                     (all <a>'s and <div> elements)
-# "div + a"          =  <div></div><a></a>             (all <a>'s directly preceded by <div>)
-# "div > a"          =  <div><a></a></div>             (all <a>'s directly inside a <div>)
+# "*"                 =  <div>, <p>, ...                (all elements)
+# "*#x"               =  <div id="x">, <p id="x">, ...  (all elements with id="x")
+# "div#x"             =  <div id="x">                   (<div> elements with id="x")
+# "div.x"             =  <div class="x">                (<div> elements with class="x")
+# "div[class='x']"    =  <div class="x">                (<div> elements with attribute "class"="x")
+# "div:contains('x')" =  <div>xyz</div>                 (<div> elements that contain "x")
+# "div:first-child"   =  <div><a>1st<a><a></a></div>    (first child inside a <div>)
+# "div a"             =  <div><p><a></a></p></div>      (all <a>'s inside a <div>)
+# "div, a"            =  <div>, <a>                     (all <a>'s and <div> elements)
+# "div + a"           =  <div></div><a></a>             (all <a>'s directly preceded by <div>)
+# "div > a"           =  <div><a></a></div>             (all <a>'s directly inside a <div>)
 # "div < a"                                            (all <div>'s directly containing an <a>)
 
 # Selectors are case-insensitive.
+
+def _encode_space(s):
+    return s.replace(" ", "<!space!>")
+    
+def _decode_space(s):
+    return s.replace("<!space!>", " ")
 
 class Selector(object):
 
@@ -2979,6 +3253,12 @@ class Selector(object):
         s = s.replace(".", " .")        # .class
         s = s.replace(":", " :")        # :pseudo-element
         s = s.replace("[", " [")        # [attribute="value"]
+        s = re.sub(r"\[.*?\]", 
+            lambda m: re.sub(r" (\#|\.|\:)", "\\1", m.group(0)), s)    
+        s = re.sub(r"\[.*?\]", 
+            lambda m: _encode_space(m.group(0)), s)
+        s = re.sub(r":contains\(.*?\)", 
+            lambda m: _encode_space(m.group(0)), s)
         s = s.split(" ")
         self.tag, self.id, self.classes, self.pseudo, self.attributes = (
              s[0],
@@ -2994,16 +3274,19 @@ class Selector(object):
         s = s.strip("[]")
         s = s.replace("'", "")
         s = s.replace('"', "")
+        s = _decode_space(s)
         s = re.sub(r"(\~|\||\^|\$|\*)\=", "=\\1", s)
         s = s.split("=") + [True]
         s = s[:2]
-        if s[1] is not True and s[1].startswith(("~", "|", "^", "$", "*")):
-            p, s[1] = s[1][0], s[1][1:]
-            if p == "~": r = r"(^|\s)%s(\s|$)"
-            if p == "|": r = r"^%s(-|$)" # XXX doesn't work with spaces.
-            if p == "^": r = r"^%s"
-            if p == "$": r = r"%s$"
-            if p == "*": r = r"%s"
+        if s[1] is not True:
+            r = r"^%s$"
+            if s[1].startswith(("~", "|", "^", "$", "*")):
+                p, s[1] = s[1][0], s[1][1:]
+                if p == "~": r = r"(^|\s)%s(\s|$)"
+                if p == "|": r = r"^%s(-|$)" # XXX doesn't work with spaces.
+                if p == "^": r = r"^%s"
+                if p == "$": r = r"%s$"
+                if p == "*": r = r"%s"
             s[1] = re.compile(r % s[1], re.I)
         return s[:2]
 
@@ -3014,14 +3297,30 @@ class Selector(object):
             for e in e.children:
                 if isinstance(e, Element):
                     return e
-
-    def _first_sibling(self, e):
+                
+    def _next_sibling(self, e):
         """ Returns the first next sibling Element of the given element.
         """
         while isinstance(e, Node):
             e = e.next
             if isinstance(e, Element):
                 return e
+                
+    def _previous_sibling(self, e):
+        """ Returns the last previous sibling Element of the given element.
+        """
+        while isinstance(e, Node):
+            e = e.previous
+            if isinstance(e, Element):
+                return e
+                
+    def _contains(self, e, s):
+        """ Returns True if string s occurs in the given element (case-insensitive).
+        """
+        s = re.sub(r"^contains\((.*?)\)$", "\\1", s)
+        s = re.sub(r"^[\"']|[\"']$", "", s)
+        s = _decode_space(s)
+        return re.search(s.lower(), e.content.lower()) is not None
 
     def match(self, e):
         """ Returns True if the given element matches the simple CSS selector.
@@ -3036,8 +3335,10 @@ class Selector(object):
             return False
         if "first-child" in self.pseudo and self._first_child(e.parent) != e:
             return False
-        for k, v in self.attributes:
-            if k not in e.attrs or v not in (e.attrs[k].lower(), True):
+        if any(x.startswith("contains") and not self._contains(e, x) for x in self.pseudo):
+            return False # jQuery :contains("...") selector.
+        for k, v in self.attributes.items():
+            if k not in e.attrs or not (v is True or re.search(v, e.attrs[k]) is not None):
                 return False
         return True
 
@@ -3047,20 +3348,22 @@ class Selector(object):
         # Map tag to True if it is "*".
         tag = self.tag == "*" or self.tag
         # Map id into a case-insensitive **kwargs dict.
-        i = lambda s: re.compile(r"\b%s\b" % s, re.I)
+        i = lambda s: re.compile(r"\b%s(?=$|\s)" % s, re.I)
         a = {"id": i(self.id)} if self.id else {}
-        a.update(map(lambda (k, v): (k, i(v)), self.attributes.iteritems()))
+        a.update(map(lambda kv: (kv[0], kv[1]), self.attributes.items()))
         # Match tag + id + all classes + relevant pseudo-elements.
         if not isinstance(e, Element):
             return []
         if len(self.classes) == 0 or len(self.classes) >= 2:
-            e = map(Element, e._p.findAll(tag, **a))
+            e = map(Element, e._p.findAll(tag, attrs=a))
         if len(self.classes) == 1:
-            e = map(Element, e._p.findAll(tag, **dict(a, **{"class": i(list(self.classes)[0])})))
+            e = map(Element, e._p.findAll(tag, attrs=dict(a, **{"class": i(list(self.classes)[0])})))
         if len(self.classes) >= 2:
             e = filter(lambda e: self.classes.issubset(set(e.attr.get("class", "").lower().split())), e)
         if "first-child" in self.pseudo:
             e = filter(lambda e: e == self._first_child(e.parent), e)
+        if any(x.startswith("contains") for x in self.pseudo):
+            e = filter(lambda e: all(not x.startswith("contains") or self._contains(e, x) for x in self.pseudo), e)
         return e
 
     def __repr__(self):
@@ -3080,6 +3383,10 @@ class SelectorChain(list):
             s = re.sub(r" *\> *", " >", s)
             s = re.sub(r" *\< *", " <", s)
             s = re.sub(r" *\+ *", " +", s)
+            s = re.sub(r"\[.*?\]", 
+                lambda m: _encode_space(m.group(0)), s)
+            s = re.sub(r":contains\(.*?\)", 
+                lambda m: _encode_space(m.group(0)), s)
             self.append([])
             for s in s.split(" "):
                 if not s.startswith((">", "<", "+")):
@@ -3113,7 +3420,7 @@ class SelectorChain(list):
                     e = filter(s.match, e)
                 if combinator == "+":
                     # X + Y => X directly precedes Y
-                    e = map(s._first_sibling, e)
+                    e = map(s._next_sibling, e)
                     e = filter(s.match, e)
             m.extend(e)
         return m
@@ -3129,11 +3436,11 @@ class SelectorChain(list):
 #</hmtl>
 #""")
 #
-#print dom("*[class='11']")
-#print dom("*[class^='11']")
-#print dom("*[class~='22']")
-#print dom("*[class$='33']")
-#print dom("*[class*='3']")
+#print(dom("*[class='11']"))
+#print(dom("*[class^='11']"))
+#print(dom("*[class~='22']"))
+#print(dom("*[class$='33']"))
+#print(dom("*[class*='3']"))
 
 #### WEB CRAWLER ###################################################################################
 # Tested with a crawl across 1,000 domains so far.
@@ -3215,14 +3522,14 @@ LIFO = "lifo" # Last In, First Out (= FILO).
 
 class Crawler(object):
 
-    def __init__(self, links=[], domains=[], delay=20.0, parser=HTMLLinkParser().parse, sort=FIFO):
+    def __init__(self, links=[], domains=[], delay=20.0, parse=HTMLLinkParser().parse, sort=FIFO):
         """ A crawler can be used to browse the web in an automated manner.
             It visits the list of starting URLs, parses links from their content, visits those, etc.
             - Links can be prioritized by overriding Crawler.priority().
             - Links can be ignored by overriding Crawler.follow().
             - Each visited link is passed to Crawler.visit(), which can be overridden.
         """
-        self.parse    = parser
+        self.parse    = parse
         self.delay    = delay   # Delay between visits to the same (sub)domain.
         self.domains  = domains # Domains the crawler is allowed to visit.
         self.history  = {}      # Domain name => time last visited.
@@ -3326,7 +3633,7 @@ class Crawler(object):
                 self.fail(link)
             # Log the current time visited for the domain (see Crawler.pop()).
             # Log the URL as visited.
-            self.history[base(link.url)] = time.time()
+            self.history[base(link.url)] = t
             self.visited[link.url] = True
             return True
         # Nothing happened, we already visited this link.
@@ -3376,9 +3683,9 @@ Spider = Crawler
 
 #class Polly(Crawler):
 #    def visit(self, link, source=None):
-#        print "visited:", link.url, "from:", link.referrer
+#        print("visited:", link.url, "from:", link.referrer)
 #    def fail(self, link):
-#        print "failed:", link.url
+#        print("failed:", link.url)
 #
 #p = Polly(links=["http://nodebox.net/"], domains=["nodebox.net"], delay=5)
 #while not p.done:
@@ -3387,7 +3694,7 @@ Spider = Crawler
 #--- CRAWL FUNCTION --------------------------------------------------------------------------------
 # Functional approach to crawling.
 
-def crawl(links=[], domains=[], delay=20.0, parser=HTMLLinkParser().parse, sort=FIFO, method=DEPTH, **kwargs):
+def crawl(links=[], domains=[], delay=20.0, parse=HTMLLinkParser().parse, sort=FIFO, method=DEPTH, **kwargs):
     """ Returns a generator that yields (Link, source)-tuples of visited pages.
         When the crawler is idle, it yields (None, None).
     """
@@ -3403,7 +3710,7 @@ def crawl(links=[], domains=[], delay=20.0, parser=HTMLLinkParser().parse, sort=
     # - asynchronous(crawl().next)
     #   AsynchronousRequest.value is set to (Link, source) once AsynchronousRequest.done=True.
     #   The program will not halt in the meantime (i.e., the next crawl is threaded).
-    crawler = Crawler(links, domains, delay, parser, sort)
+    crawler = Crawler(links, domains, delay, parse, sort)
     bind(crawler, "visit", \
         lambda crawler, link, source=None: \
             setattr(crawler, "crawled", (link, source))) # Define Crawler.visit() on-the-fly.
@@ -3413,16 +3720,16 @@ def crawl(links=[], domains=[], delay=20.0, parser=HTMLLinkParser().parse, sort=
         yield crawler.crawled
 
 #for link, source in crawl("http://www.clips.ua.ac.be/", delay=0, throttle=1, cached=False):
-#    print link
+#    print(link)
 
 #g = crawl("http://www.clips.ua.ac.be/"")
 #for i in range(10):
 #    p = asynchronous(g.next)
 #    while not p.done:
-#        print "zzz..."
+#        print("zzz...")
 #        time.sleep(0.1)
 #    link, source = p.value
-#    print link
+#    print(link)
 
 
 #### DOCUMENT PARSER ###############################################################################
@@ -3484,8 +3791,8 @@ class PDF(DocumentParser):
             p = kwargs.get("format", "txt").endswith("html") and HTMLConverter or TextConverter
             p = p(m, s, codec="utf-8", laparams=LAParams())
             process_pdf(m, p, self._open(path), set(), maxpages=0, password="")
-        except Exception, e:
-            raise PDFError, str(e)
+        except Exception as e:
+            raise PDFError(str(e))
         s = s.getvalue()
         s = decode_utf8(s)
         s = s.strip()
@@ -3510,8 +3817,8 @@ class DOCX(DocumentParser):
         try:
             s = opendocx(self._open(path))
             s = getdocumenttext(s)
-        except Exception, e:
-            raise DOCXError, str(e)
+        except Exception as e:
+            raise DOCXError(str(e))
         s = "\n\n".join(p for p in s)
         s = decode_utf8(s)
         s = collapse_spaces(s)

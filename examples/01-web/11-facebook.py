@@ -1,7 +1,7 @@
-import os, sys; sys.path.insert(0, os.path.join("..", ".."))
+import os, sys; sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from pattern.web import Facebook, NEWS, COMMENTS, LIKES
-from pattern.db  import Datasheet, pprint
+from pattern.db  import Datasheet, pprint, pd
 
 # The Facebook API can be used to search public status updates (no license needed).
 
@@ -9,7 +9,8 @@ from pattern.db  import Datasheet, pprint
 # from a given profile or product page.
 # This requires a personal license key.
 # If you are logged in to Facebook, you can get a license key here:
-# http://www.clips.ua.ac.be/media/pattern-fb.html
+# http://www.clips.ua.ac.be/pattern-facebook
+# (We don't / can't store your information).
 
 # 1) Searching for public status updates.
 #    Search for all status updates that contain the word "horrible".
@@ -20,7 +21,7 @@ try:
     # In the first column, we'll store a unique id for each status update.
     # We only want to add new status updates, i.e., those we haven't seen yet.
     # With an index on the first column we can quickly check if an id already exists.
-    table = Datasheet.load("opinions.txt")
+    table = Datasheet.load(pd("opinions.csv"))
     index = set(table.columns[0])
 except:
     table = Datasheet()
@@ -46,21 +47,22 @@ for status in fb.search("horrible", count=25, cached=False):
         table.append([status.id, status.text])
         index.add(status.id)
 
-table.save("opinions.txt")
+# Create a .csv in pattern/examples/01-web/
+table.save(pd("opinions.csv"))
 
 # 2) Status updates from specific profiles.
 #    For this you need a personal license key:
-#    http://www.clips.ua.ac.be/media/pattern-fb.html
+#    http://www.clips.ua.ac.be/pattern-facebook
 
 license = ""
 
 if license != "":
     fb = Facebook(license)
-    # Facebook.profile() returns an (id, name, date of birth, gender, locale, likes)-tuple.
+    # Facebook.profile() returns a dictionary with author info.
     # By default, this is your own profile. 
     # You can also supply the id of another profile, 
     # or the name of a product page.
-    me = fb.profile()[0]
+    me = fb.profile()["id"]
     for status in fb.search(me, type=NEWS, count=30, cached=False):
         print "-" * 100
         print status.id    # Status update unique id.

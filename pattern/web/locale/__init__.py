@@ -155,7 +155,7 @@ def encode_language(name):
     """ Returns the language code for the given language name.
         For example: encode_language("dutch") => "nl".
     """
-    for tag, (language, region, iso639, iso3166) in LANGUAGE_REGION.iteritems():
+    for tag, (language, region, iso639, iso3166) in LANGUAGE_REGION.items():
         if language == name.capitalize():
             return iso639
 
@@ -163,7 +163,7 @@ def decode_language(code):
     """ Returns the language name for the given language code.
         For example: decode_language("nl") => "Dutch".
     """
-    for tag, (language, region, iso639, iso3166) in LANGUAGE_REGION.iteritems():
+    for tag, (language, region, iso639, iso3166) in LANGUAGE_REGION.items():
         if iso639 == code.lower(): 
             return language
 
@@ -171,7 +171,7 @@ def encode_region(name):
     """ Returns the region code for the given region name.
         For example: encode_region("belgium") => "BE".
     """
-    for tag, (language, region, iso639, iso3166) in LANGUAGE_REGION.iteritems():
+    for tag, (language, region, iso639, iso3166) in LANGUAGE_REGION.items():
         if region == name.capitalize():
             return iso3166
 
@@ -179,7 +179,7 @@ def decode_region(code):
     """ Returns the region name for the given region code.
         For example: decode_region("be") => "Belgium".
     """
-    for tag, (language, region, iso639, iso3166) in LANGUAGE_REGION.iteritems():
+    for tag, (language, region, iso639, iso3166) in LANGUAGE_REGION.items():
         if iso3166 == code.upper():
             return region
         
@@ -188,20 +188,20 @@ def languages(region):
         For example: languages(encode_region("belgium")) => ["fr", "nl"]
     """
     v, a = region.upper(), []
-    for tag, (language, region, iso639, iso3166) in LANGUAGE_REGION.iteritems():
+    for tag, (language, region, iso639, iso3166) in LANGUAGE_REGION.items():
         if iso3166 == v:
             a.append(iso639)
-    return a
+    return sorted(a)
 
 def regions(language):
     """ Returns a list of region codes for the given language code.
         For example: regions(encode_language("dutch")) => ["NL", "BE"]
     """
     x, a = language.lower(), []
-    for tag, (language, region, iso639, iso3166) in LANGUAGE_REGION.iteritems():
+    for tag, (language, region, iso639, iso3166) in LANGUAGE_REGION.items():
         if iso639 == x: 
             a.append(iso3166)
-    return a
+    return sorted(a, key=lambda tag: tag.lower() != x and tag or "")
 
 def regionalize(language):
     """ Returns a list of RFC-5646 language-region codes for the given language code.
@@ -224,13 +224,13 @@ def market(language):
     a = len(a) > 0 and a[0] or None
     return a
 
-#print encode_language("dutch") # nl
-#print decode_language("nl")    # Dutch
-#print encode_region("belgium") # BE
-#print decode_region("be")      # Belgium
-#print languages("be")          # ["fr", "nl"]
-#print regions("nl")            # ["NL", "BE"]
-#print regionalize("nl")        # ["nl-NL", "nl-BE"]
+#print(encode_language("dutch")) # nl
+#print(decode_language("nl"))    # Dutch
+#print(encode_region("belgium")) # BE
+#print(decode_region("be"))      # Belgium
+#print(languages("be"))          # ["fr", "nl"]
+#print(regions("nl"))            # ["NL", "BE"]
+#print(regionalize("nl"))        # ["nl-NL", "nl-BE"]
 
 ### GEOCODE ########################################################################################
 # capital => (latitude, longitude, ISO-639 language code, region)

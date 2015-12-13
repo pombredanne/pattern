@@ -12,7 +12,7 @@ import sys
 import re
 
 try:
-    MODULE = os.path.dirname(os.path.abspath(__file__))
+    MODULE = os.path.dirname(os.path.realpath(__file__))
 except:
     MODULE = ""
 
@@ -39,6 +39,10 @@ from pattern.text import (
     Sentiment as _Sentiment,
     NOUN, VERB, ADJECTIVE, ADVERB,
     MOOD, IRONY
+)
+# Import spelling base class.
+from pattern.text import (
+    Spelling
 )
 # Import verb tenses.
 from pattern.text import (
@@ -86,7 +90,7 @@ def wotan2penntreebank(token, tag):
     """ Converts a WOTAN tag to a Penn Treebank II tag.
         For example: bokkenrijders/N(soort,mv,neut) => bokkenrijders/NNS
     """
-    for k, v in wotan.iteritems():
+    for k, v in wotan.items():
         if tag.startswith(k):
             for a, b in v:
                 if a in tag: 
@@ -158,9 +162,10 @@ class Sentiment(_Sentiment):
                     self.annotate(attributive(w), "JJ", p, s, i)
 
 parser = Parser(
-     lexicon = os.path.join(MODULE, "nl-lexicon.txt"), 
-  morphology = os.path.join(MODULE, "nl-morphology.txt"), 
-     context = os.path.join(MODULE, "nl-context.txt"), 
+     lexicon = os.path.join(MODULE, "nl-lexicon.txt"),
+   frequency = os.path.join(MODULE, "nl-frequency.txt"),
+  morphology = os.path.join(MODULE, "nl-morphology.txt"),
+     context = os.path.join(MODULE, "nl-context.txt"),
      default = ("N(soort,ev,neut)", "N(eigen,ev)", "Num()"),
     language = "nl"
 )
@@ -170,11 +175,15 @@ lexicon = parser.lexicon # Expose lexicon.
 sentiment = Sentiment(
         path = os.path.join(MODULE, "nl-sentiment.xml"), 
       synset = "cornetto_id",
-   negations = ("geen", "niet", "nooit"),
+   negations = ("geen", "gene", "ni", "niet", "nooit"),
    modifiers = ("JJ", "RB",),
    modifier  = lambda w: w.endswith(("ig", "isch", "lijk")),
    tokenizer = parser.find_tokens,
     language = "nl"
+)
+
+spelling = Spelling(
+        path = os.path.join(MODULE, "nl-spelling.txt")
 )
 
 def tokenize(s, *args, **kwargs):
@@ -205,6 +214,20 @@ def tag(s, tokenize=True, encoding="utf-8", **kwargs):
         for token in sentence:
             tags.append((token[0], token[1]))
     return tags
+
+def keywords(s, top=10, **kwargs):
+    """ Returns a sorted list of keywords in the given string.
+    """
+    return parser.find_keywords(s, **dict({
+        "frequency": parser.frequency,
+              "top": top,
+              "pos": ("NN",),
+           "ignore": ("rt", "mensen")}, **kwargs))
+
+def suggest(w):
+    """ Returns a list of (word, confidence)-tuples of spelling corrections.
+    """
+    return spelling.suggest(w)
 
 def polarity(s, **kwargs):
     """ Returns the sentence polarity (positive/negative) between -1.0 and 1.0.

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 *-*
-import os, sys, pprint; sys.path.insert(0, os.path.join("..", ".."))
+import os, sys; sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from pattern.web import Wikia
 
@@ -39,7 +39,7 @@ for article in w.articles(count=2, cached=True):
 # Alternatively, we can retrieve just the titles, 
 # and only retrieve the full articles for the titles we need:
 i = 0
-for title in w.list(count=2):
+for title in w.index(count=2):
     print
     print title
     #article = w.search(title)

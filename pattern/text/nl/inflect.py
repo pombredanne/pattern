@@ -23,7 +23,7 @@ import sys
 import re
 
 try:
-    MODULE = os.path.dirname(os.path.abspath(__file__))
+    MODULE = os.path.dirname(os.path.realpath(__file__))
 except:
     MODULE = ""
 
@@ -136,7 +136,7 @@ def pluralize(word, pos=NOUN, custom={}):
 
 #### SINGULARIZE ###################################################################################
 
-singular_irregular = dict((v,k) for k,v in plural_irregular.iteritems())
+singular_irregular = dict((v,k) for k,v in plural_irregular.items())
 
 def singularize(word, pos=NOUN, custom={}):
     if word in custom.keys():
@@ -238,6 +238,7 @@ class Verbs(_Verbs):
         self._inverse["waren"] = "zijn"
         self._inverse["zagen"] = "zien"
         self._inverse["wist"]  = "weten"
+        self._inverse["zou"]   = "zullen"
     
     def find_lemma(self, verb):
         """ Returns the base form of the given inflected verb, using a rule-based approach.
@@ -375,7 +376,7 @@ def attributive(adjective):
         w = w + w[-1]
     return w + "e"
 
-adjective_predicative = dict((v,k) for k,v in adjective_attributive.iteritems())
+adjective_predicative = dict((v,k) for k,v in adjective_attributive.items())
 adjective_predicative.update({
           "moe": "moe",
         "taboe": "taboe",

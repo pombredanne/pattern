@@ -5,9 +5,9 @@
 # http://www.clips.ua.ac.be/pages/pattern
 
 ####################################################################################################
-# This module can benefit from loading psyco when iterating a GraphLayout.
 
 import os
+import sys
 
 from math     import sqrt, pow
 from math     import sin, cos, atan2, degrees, radians, pi
@@ -18,18 +18,30 @@ from codecs   import open
 from shutil   import rmtree
 
 try:
-    MODULE = os.path.dirname(os.path.abspath(__file__))
+    MODULE = os.path.dirname(os.path.realpath(__file__))
 except:
     MODULE = ""
+    
+if sys.version > "3":
+    long = int
 
 # float("inf") doesn't work on windows.
 INFINITE = 1e20
 
-# This module is standalone.
-# For drawing, line(), ellipse() and Text.draw() must be either implemented or patched.
+#--- LIST FUNCTIONS --------------------------------------------------------------------------------
+
+def unique(iterable):
+    """ Returns a list copy in which each item occurs only once (in-order).
+    """
+    seen = set()
+    return [x for x in iterable if x not in seen and not seen.add(x)]
+
+#--- DRAWING FUNCTIONS -----------------------------------------------------------------------------
+# This module is standalone (i.e., it is not a graph rendering package).
+# If you want to call Graph.draw() then line(), ellipse() and Text.draw() must be implemented.
 
 def line(x1, y1, x2, y2, stroke=(0,0,0,1), strokewidth=1):
-    """ Draws a line from (x1, y1) to (x2, y2) using the given strok color and stroke width.
+    """ Draws a line from (x1, y1) to (x2, y2) using the given stroke color and stroke width.
     """
     pass
     
@@ -39,29 +51,39 @@ def ellipse(x, y, width, height, fill=(0,0,0,1), stroke=None, strokewidth=1):
     pass
 
 class Text(object):
+    
     def __init__(self, string, **kwargs):
+        """ Draws the node label.
+            Optional properties include width, fill, font, fontsize, fontweight.
+        """
         self.string = string
         self.__dict__.update(kwargs)
+        
     def copy(self):
         k = self.__dict__.copy()
         k.pop("string")
         return Text(self.string, **k)
+        
     def draw(self):
-        """ Draws the node label.
-            Optional properties include width, fill and fontsize.
-        """
         pass
         
 class Vector(object):
+    
     def __init__(self, x=0, y=0):
         self.x = x
         self.y = y
+        
+def coordinates(x, y, distance, angle):
+    return (
+        (x + distance * cos(radians(angle))),
+        (y + distance * sin(radians(angle)))
+    )
 
-#--- NODE ------------------------------------------------------------------------------------------
+#--- DEEPCOPY --------------------------------------------------------------------------------------
 
 def deepcopy(o):
-    # A color can be represented as a tuple or as a nodebox.graphics.Color object,
-    # in which case it needs to be copied by invoking Color.copy().
+    """ Returns a deep (recursive) copy of the given object.
+    """
     if o is None:
         return o
     if hasattr(o, "copy"):
@@ -71,8 +93,12 @@ def deepcopy(o):
     if isinstance(o, (list, tuple, set)):
         return o.__class__(deepcopy(v) for v in o)
     if isinstance(o, dict):
-        return dict((deepcopy(k), deepcopy(v)) for k,v in o.iteritems())
-    raise Exception, "don't know how to copy %s" % o.__class__.__name__
+        return dict((deepcopy(k), deepcopy(v)) for k,v in o.items())
+    raise Exception("don't know how to copy %s" % o.__class__.__name__)
+
+#### NODE ##########################################################################################
+
+#--- NODE ------------------------------------------------------------------------------------------
 
 class Node(object):
     
@@ -124,6 +150,16 @@ class Node(object):
         return self.graph is not None \
            and [e for e in self.graph.edges if self.id in (e.node1.id, e.node2.id)] \
             or []
+            
+    @property
+    def edge(self, node, reverse=False):
+        """ Yields the Edge from this node to the given node, or None.
+        """
+        if not isinstance(node, Node):
+            node = self.graph and self.graph.get(node) or node
+        if reverse:
+            return node.links.edge(self)
+        return self.links.edge(node)
     
     @property
     def weight(self):
@@ -143,6 +179,12 @@ class Node(object):
     
     eigenvector = eigenvector_centrality = weight
     betweenness = betweenness_centrality = centrality
+    
+    @property
+    def degree(self):
+        """ Yields degree centrality as a number between 0.0-1.0.
+        """
+        return self.graph and (1.0 * len(self.links) / len(self.graph)) or 0.0
         
     def flatten(self, depth=1, traversable=lambda node, edge: True, _visited=None):
         """ Recursively lists the node and nodes linked to it.
@@ -199,11 +241,13 @@ class Node(object):
     def __ne__(self, node):
         return not self.__eq__(node)
 
+#--- NODE LINKS ------------------------------------------------------------------------------------
+
 class Links(list):
     
     def __init__(self): 
         """ A list in which each node has an associated edge.
-            The edge() method returns the edge for a given node id.
+            The Links.edge() method returns the edge for a given node id.
         """
         self.edges = dict()
     
@@ -219,9 +263,7 @@ class Links(list):
     def edge(self, node): 
         return self.edges.get(isinstance(node, Node) and node.id or node)
 
-#--- EDGE ------------------------------------------------------------------------------------------
-
-coordinates = lambda x, y, d, a: (x + d*cos(radians(a)), y + d*sin(radians(a)))
+#### EDGE ##########################################################################################
 
 class Edge(object):
 
@@ -285,26 +327,29 @@ class Edge(object):
     def __repr__(self):
         return "%s(id1=%s, id2=%s)" % (self.__class__.__name__, repr(self.node1.id), repr(self.node2.id))
 
-#--- GRAPH -----------------------------------------------------------------------------------------
+#### GRAPH #########################################################################################
 
-# Return value of Graph.shortest_paths().
-# Dictionary values can be accessed by Node as well as by node id.
+#--- GRAPH NODE DICTIONARY -------------------------------------------------------------------------
+
 class nodedict(dict):
+    
     def __init__(self, graph, *args, **kwargs):
+        """ Graph.shortest_paths() and Graph.eigenvector_centrality() return a nodedict,
+            where dictionary values can be accessed by Node as well as by node id.
+        """
         dict.__init__(self, *args, **kwargs)
         self.graph = graph
+        
     def __contains__(self, node):
         return dict.__contains__(self, self.graph.get(node, node))
+        
     def __getitem__(self, node):
         return dict.__getitem__(self, isinstance(node, Node) and node or self.graph[node])
+        
     def get(self, node, default=None):
         return dict.get(self, self.graph.get(node, node), default)
 
-def unique(iterable):
-    """ Returns a list copy in which each item occurs only once (in-order).
-    """
-    seen = set()
-    return [x for x in iterable if x not in seen and not seen.add(x)]
+#--- GRAPH -----------------------------------------------------------------------------------------
 
 # Graph layouts:
 SPRING = "spring"
@@ -312,6 +357,7 @@ SPRING = "spring"
 # Graph node centrality:
 EIGENVECTOR = "eigenvector"
 BETWEENNESS = "betweenness"
+DEGREE      = "degree"
 
 # Graph node sort order:
 WEIGHT, CENTRALITY = "weight", "centrality"
@@ -327,14 +373,14 @@ class Graph(dict):
         self.edges      = []   # List of Edge objects.
         self.root       = None
         self._adjacency = None # Cached adjacency() dict.
-        self.layout     = layout==SPRING and GraphSpringLayout(self) or GraphLayout(self)
+        self.layout     = layout == SPRING and GraphSpringLayout(self) or GraphLayout(self)
         self.distance   = distance
     
     def __getitem__(self, id):
         try: 
             return dict.__getitem__(self, id)
         except KeyError:
-            raise KeyError, "no node with id '%s' in graph" % id
+            raise KeyError("no node with id '%s' in graph" % id)
     
     def append(self, base, *args, **kwargs):
         """ Appends a Node or Edge to the graph: Graph.append(Node, id="rabbit").
@@ -447,7 +493,7 @@ class Graph(dict):
         if not isinstance(node, Node): 
             node = self[node]
         p = nodedict(self)
-        for id, path in dijkstra_shortest_paths(self, node.id, heuristic, directed).iteritems():
+        for id, path in dijkstra_shortest_paths(self, node.id, heuristic, directed).items():
             p[self[id]] = path and [self[id] for id in path] or None
         return p 
             
@@ -457,8 +503,8 @@ class Graph(dict):
             Node.weight is higher for nodes with a lot of (indirect) incoming traffic.
         """
         ec = eigenvector_centrality(self, normalized, reversed, rating, iterations, tolerance)
-        ec = nodedict(self, ((self[id], w) for id, w in ec.iteritems()))
-        for n, w in ec.iteritems(): 
+        ec = nodedict(self, ((self[id], w) for id, w in ec.items()))
+        for n, w in ec.items(): 
             n._weight = w
         return ec
             
@@ -468,8 +514,8 @@ class Graph(dict):
             Node.centrality is higher for nodes with a lot of passing traffic.
         """
         bc = brandes_betweenness_centrality(self, normalized, directed)
-        bc = nodedict(self, ((self[id], w) for id, w in bc.iteritems()))
-        for n, w in bc.iteritems(): 
+        bc = nodedict(self, ((self[id], w) for id, w in bc.items()))
+        for n, w in bc.items(): 
             n._centrality = w
         return bc
         
@@ -546,7 +592,7 @@ class Graph(dict):
         except TypeError:
             new = self.add_node(n.id, root=kwargs.get("root",False))
         new.__class__ = n.__class__
-        new.__dict__.update((k, deepcopy(v)) for k,v in n.__dict__.iteritems() 
+        new.__dict__.update((k, deepcopy(v)) for k,v in n.__dict__.items() 
             if k not in ("graph", "links", "_x", "_y", "force", "_weight", "_centrality"))
     
     def _add_edge_copy(self, e, **kwargs):
@@ -557,7 +603,7 @@ class Graph(dict):
             kwargs.get("node1", self[e.node1.id]), 
             kwargs.get("node2", self[e.node2.id]))
         new.__class__ = e.__class__
-        new.__dict__.update((k, deepcopy(v)) for k,v in e.__dict__.iteritems()
+        new.__dict__.update((k, deepcopy(v)) for k,v in e.__dict__.items()
             if k not in ("node1", "node2"))
     
     def copy(self, nodes=ALL):
@@ -571,6 +617,15 @@ class Graph(dict):
         for e in self.edges: 
             g._add_edge_copy(e)
         return g
+        
+    def export(self, *args, **kwargs):
+        export(self, *args, **kwargs)
+    
+    def write(self, *args, **kwargs):
+        write(self, *args, **kwargs)
+    
+    def serialize(self, *args, **kwargs):
+        return render(self, *args, **kwargs)
 
 #--- GRAPH LAYOUT ----------------------------------------------------------------------------------
 # Graph drawing or graph layout, as a branch of graph theory, 
@@ -590,9 +645,9 @@ class GraphLayout(object):
     def reset(self):
         self.iterations = 0
         for n in self.graph.nodes:
-            n._x = 0
-            n._y = 0
-            n.force = Vector(0,0)
+            n._x = 0.0
+            n._y = 0.0
+            n.force = Vector(0.0, 0.0)
             
     @property
     def bounds(self):
@@ -610,6 +665,8 @@ class GraphLayout(object):
     def copy(self, graph):
         return GraphLayout(self, graph)
 
+#--- GRAPH LAYOUT: FORCE-BASED ---------------------------------------------------------------------
+
 class GraphSpringLayout(GraphLayout):
     
     def __init__(self, graph):
@@ -620,25 +677,25 @@ class GraphSpringLayout(GraphLayout):
         GraphLayout.__init__(self, graph)
         self.k         = 4.0  # Force constant.
         self.force     = 0.01 # Force multiplier.
-        self.repulsion = 15   # Maximum repulsive force radius.
+        self.repulsion = 50   # Maximum repulsive force radius.
 
     def _distance(self, node1, node2):
         # Yields a tuple with distances (dx, dy, d, d**2).
         # Ensures that the distance is never zero (which deadlocks the animation).
         dx = node2._x - node1._x
         dy = node2._y - node1._y
-        d2 = dx*dx + dy*dy
+        d2 = dx * dx + dy * dy
         if d2 < 0.01:
             dx = random() * 0.1 + 0.1
             dy = random() * 0.1 + 0.1
-            d2 = dx*dx + dy*dy
+            d2 = dx * dx + dy * dy
         return dx, dy, sqrt(d2), d2
 
     def _repulse(self, node1, node2):
         # Updates Node.force with the repulsive force.
         dx, dy, d, d2 = self._distance(node1, node2)
         if d < self.repulsion:
-            f = self.k**2 / d2
+            f = self.k ** 2 / d2
             node2.force.x += f * dx
             node2.force.y += f * dy
             node1.force.x -= f * dx
@@ -648,7 +705,7 @@ class GraphSpringLayout(GraphLayout):
         # Updates Node.force with the attractive edge force.
         dx, dy, d, d2 = self._distance(node1, node2)
         d = min(d, self.repulsion)
-        f = (d2 - self.k**2) / self.k * length
+        f = (d2 - self.k ** 2) / self.k * length
         f *= weight * 0.5 + 1
         f /= d
         node2.force.x -= f * dx
@@ -668,7 +725,7 @@ class GraphSpringLayout(GraphLayout):
                 self._repulse(n1, n2)
         # Forces on nodes due to edge attractions.
         for e in self.graph.edges:
-            self._attract(e.node1, e.node2, weight*e.weight, 1.0/(e.length or 0.01))
+            self._attract(e.node1, e.node2, weight * e.weight, 1.0 / (e.length or 0.01))
         # Move nodes by given force.
         for n in self.graph.nodes:
             if not n.fixed:
@@ -682,7 +739,9 @@ class GraphSpringLayout(GraphLayout):
         g.k, g.force, g.repulsion = self.k, self.force, self.repulsion
         return g
 
-#--- GRAPH TRAVERSAL -------------------------------------------------------------------------------
+#### GRAPH ANALYSIS ################################################################################
+
+#--- GRAPH SEARCH ----------------------------------------------------------------------------------
 
 def depth_first_search(node, visit=lambda node: False, traversable=lambda node, edge: True, _visited=None):
     """ Visits all the nodes connected to the given root node, depth-first.
@@ -747,8 +806,8 @@ def edges(path):
     # For example, the distance (i.e., edge weight sum) of a path:
     # sum(e.weight for e in edges(path))
     return len(path) > 1 and (n.links.edge(path[i+1]) for i,n in enumerate(path[:-1])) or iter(())
-    
-#--- GRAPH THEORY ----------------------------------------------------------------------------------
+
+#--- GRAPH ADJACENCY -------------------------------------------------------------------------------
 
 def adjacency(graph, directed=False, reversed=False, stochastic=False, heuristic=None):
     """ Returns a dictionary indexed by node id1's,
@@ -803,7 +862,7 @@ def dijkstra_shortest_path(graph, id1, id2, heuristic=None, directed=False):
         if n1 == id2:
             return list(flatten(path))[::-1] + [n1]
         path = (n1, path)
-        for (n2, cost2) in G[n1].iteritems():
+        for (n2, cost2) in G[n1].items():
             if n2 not in visited:
                 heappush(q, (cost1 + cost2, n2, path))
 
@@ -826,7 +885,7 @@ def dijkstra_shortest_paths(graph, id, heuristic=None, directed=False):
         (dist, v) = heappop(Q)
         if v in D: continue
         D[v] = dist
-        for w in W[v].iterkeys():
+        for w in W[v].keys():
             vw_dist = D[v] + W[v][w]
             if w not in D and (w not in seen or vw_dist < seen[w]):
                 seen[w] = vw_dist
@@ -870,7 +929,7 @@ def floyd_warshall_all_pairs_distance(graph, heuristic=None, directed=False):
         def __init__(self, predecessors, *args, **kwargs):
             dict.__init__(self, *args, **kwargs)
             self.predecessors = predecessors
-    return pdict(p, ((u, dict((v, w) for v,w in d[u].iteritems() if w < 1e30)) for u in d))
+    return pdict(p, ((u, dict((v, w) for v,w in d[u].items() if w < 1e30)) for u in d))
 
 def predecessor_path(tree, u, v):
     """ Returns the path between node u and node v as a list of node id's.
@@ -882,6 +941,8 @@ def predecessor_path(tree, u, v):
             return []
         return _traverse(u,w) + [w] + _traverse(w,v)
     return [u] + _traverse(u,v) + [v]
+
+#--- GRAPH CENTRALITY ------------------------------------------------------------------------------
 
 def brandes_betweenness_centrality(graph, normalized=True, directed=False):
     """ Betweenness centrality for nodes in the graph.
@@ -931,7 +992,7 @@ def brandes_betweenness_centrality(graph, normalized=True, directed=False):
                 b[w] += d[w]
     # Normalize between 0.0 and 1.0.
     m = normalized and max(b.values()) or 1
-    b = dict((id, w/m) for id, w in b.iteritems())
+    b = dict((id, w/m) for id, w in b.items())
     return b
 
 def eigenvector_centrality(graph, normalized=True, reversed=True, rating={}, iterations=100, tolerance=0.0001):
@@ -955,7 +1016,7 @@ def eigenvector_centrality(graph, normalized=True, reversed=True, rating={}, ite
     # It has no guarantee of convergence.
     for i in range(iterations):
         v0 = v
-        v  = dict.fromkeys(v0.iterkeys(), 0)
+        v  = dict.fromkeys(v0.keys(), 0)
         for n1 in v:
             for n2 in G[n1]:
                 v[n1] += 0.01 + v0[n2] * G[n1][n2] * rating.get(n1, 1)
@@ -964,10 +1025,12 @@ def eigenvector_centrality(graph, normalized=True, reversed=True, rating={}, ite
         if e < len(G) * tolerance:
             # Normalize between 0.0 and 1.0.
             m = normalized and max(v.values()) or 1
-            v = dict((id, w/m) for id, w in v.iteritems())
+            v = dict((id, w/m) for id, w in v.items())
             return v
     warn("node weight is 0 because eigenvector_centrality() did not converge.", Warning)
     return dict((n, 0) for n in G)
+
+#--- GRAPH PARTITIONING ----------------------------------------------------------------------------
 
 # a | b => all elements from a and all the elements from b. 
 # a & b => elements that appear in a as well as in b.
@@ -996,8 +1059,6 @@ def partition(graph):
     g.sort(lambda a, b: len(b) - len(a))
     return g
 
-#--- GRAPH THEORY | CLIQUE -------------------------------------------------------------------------
-
 def is_clique(graph):
     """ A clique is a set of nodes in which each node is connected to all other nodes.
     """
@@ -1016,7 +1077,7 @@ def clique(graph, id):
     for n in graph.nodes:
         try:
             # Raises StopIteration if all nodes in the clique are connected to n:
-            (id for id in a if n.id==id or graph.edge(n.id, id) is None).next()
+            next(id for id in a if n.id==id or graph.edge(n.id, id) is None)
         except StopIteration:
             a.append(n.id)
     return a
@@ -1032,8 +1093,8 @@ def cliques(graph, threshold=3):
             if c not in a: a.append(c)
     return a
 
-#--- GRAPH MAINTENANCE -----------------------------------------------------------------------------
-# Utility functions for safe linking and unlinking of nodes,
+#### GRAPH UTILITY FUNCTIONS #######################################################################
+# Utility functions for safely linking and unlinking of nodes,
 # with respect for the surrounding nodes.
 
 def unlink(graph, node1, node2=None):
@@ -1103,7 +1164,21 @@ def insert(graph, node, a, b):
             graph._add_edge_copy(e, node1=node, node2=a) 
     unlink(graph, a, b)
 
-#--- HTML CANVAS GRAPH RENDERER --------------------------------------------------------------------
+#### GRAPH EXPORT ##################################################################################
+
+class GraphRenderer(object):
+    
+    def __init__(self, graph):
+        self.graph = graph
+
+    def serialize(self, *args, **kwargs):
+        pass
+
+    def export(self, path, *args, **kwargs):
+        pass
+
+#--- GRAPH EXPORT: HTML5 <CANVAS> ELEMENT ---------------------------------------------------------
+# Exports graphs to interactive web pages using graph.js.
 
 def minify(js):
     """ Returns a compressed Javascript string with comments and whitespace removed.
@@ -1126,18 +1201,19 @@ def minify(js):
     return js.strip()
 
 DEFAULT, INLINE = "default", "inline"
-HTML, CANVAS, STYLE, SCRIPT, DATA = "html", "canvas", "style", "script", "data"
+HTML, CANVAS, STYLE, CSS, SCRIPT, DATA = \
+    "html", "canvas", "style", "css", "script", "data"
 
-class HTMLCanvasRenderer(object):
+class HTMLCanvasRenderer(GraphRenderer):
     
     def __init__(self, graph, **kwargs):
         self.graph    = graph
         self._source  = \
-            "<!DOCTYPE html>\n" \
+            "<!doctype html>\n" \
             "<html>\n" \
             "<head>\n" \
                 "\t<title>%s</title>\n" \
-                "\t<meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\" />\n" \
+                "\t<meta charset=\"utf-8\">\n" \
                 "\t%s\n" \
                 "\t<script type=\"text/javascript\" src=\"%scanvas.js\"></script>\n" \
                 "\t<script type=\"text/javascript\" src=\"%sgraph.js\"></script>\n" \
@@ -1152,7 +1228,7 @@ class HTMLCanvasRenderer(object):
             "</html>"
         # HTML
         self.title      = "Graph" # <title>Graph</title>
-        self.javascript = "js/"   # Path to canvas.js + graph.js.
+        self.javascript = None    # Path to canvas.js + graph.js.
         self.stylesheet = INLINE  # Either None, INLINE, DEFAULT (style.css) or a custom path.
         self.id         = "graph" # <div id="graph">
         self.ctx        = "canvas.element"
@@ -1167,12 +1243,12 @@ class HTMLCanvasRenderer(object):
         self.prune      = None    # None or int, calls Graph.prune() in Javascript.
         self.pack       = True    # Shortens leaf edges, adds eigenvector weight to node radius.
         # JS GraphLayout
-        self.distance   = 10      # Node spacing.
-        self.k          = 4.0     # Force constant.
-        self.force      = 0.01    # Force dampener.
-        self.repulsion  = 50      # Repulsive force radius.
+        self.distance   = graph.distance         # Node spacing.
+        self.k          = graph.layout.k         # Force constant.
+        self.force      = graph.layout.force     # Force dampener.
+        self.repulsion  = graph.layout.repulsion # Repulsive force radius.
         # Data
-        self.weight     = [WEIGHT, CENTRALITY] # Calculate these in Python, or True (in Javascript).
+        self.weight     = [DEGREE, WEIGHT, CENTRALITY]
         self.href       = {}      # Dictionary of Node.id => URL.
         self.css        = {}      # Dictionary of Node.id => CSS classname.
         # Default options.
@@ -1187,6 +1263,10 @@ class HTMLCanvasRenderer(object):
                   "text": (0,0,0,1),
               "fontsize": 11,
         }
+        # Override settings from keyword arguments.
+        self.default.update(kwargs.pop("default", {}))
+        for k, v in kwargs.items():
+            setattr(self, k, v)
     
     def _escape(self, s):
         if isinstance(s, basestring):
@@ -1206,11 +1286,6 @@ class HTMLCanvasRenderer(object):
         return "".join(self._data())
     
     def _data(self):
-        if self.graph.nodes and isinstance(self.weight, (list, tuple)):
-            if WEIGHT in self.weight and self.graph.nodes[-1]._weight is None:
-                self.graph.eigenvector_centrality()
-            if CENTRALITY in self.weight and self.graph.nodes[-1]._centrality is None:
-                self.graph.betweenness_centrality()
         s = []
         s.append("g = new Graph(%s, %s);\n" % (self.ctx, self.distance))
         s.append("var n = {")
@@ -1225,10 +1300,6 @@ class HTMLCanvasRenderer(object):
                 p.append("y:%i" % n._y)                           # 0
             if n.radius != self.default["radius"]:
                 p.append("radius:%.1f" % n.radius)                # 5.0
-            if n._weight is not None:
-                p.append("weight:%.2f" % n.weight)                # 0.00
-            if n._centrality is not None:
-                p.append("centrality:%.2f" % n.centrality)        # 0.00
             if n.fixed != self.default["fixed"]:
                 p.append("fixed:%s" % repr(n.fixed).lower())      # false
             if n.fill != self.default["fill"]:
@@ -1303,32 +1374,6 @@ class HTMLCanvasRenderer(object):
         s.append(   "\tcanvas.fps = %s;\n" % (self.fps))
         s.append(   "\t" + "".join(self._data()).replace("\n", "\n\t"))
         s.append(   "\n")
-        # Apply node weight to node radius.
-        if self.pack: s.append(
-                    "\tfor (var i=0; i < g.nodes.length; i++) {\n"
-                        "\t\tvar n = g.nodes[i];\n"
-                        "\t\tn.radius = n.radius + n.radius * n.weight;\n"
-                    "\t}\n")
-        # Apply edge length (leaves get shorter edges).
-        if self.pack: s.append(
-                    "\tfor (var i=0; i < g.nodes.length; i++) {\n"
-                        "\t\tvar e = g.nodes[i].edges();\n"
-                        "\t\tif (e.length == 1) {\n"
-                        "\t\t\te[0].length *= 0.2;\n"
-                        "\t\t}\n"
-                    "\t}\n")
-        # Apply eigenvector and betweenness centrality.
-        if self.weight is True: s.append(
-                    "\tg.eigenvectorCentrality();\n"
-                    "\tg.betweennessCentrality();\n")
-        if isinstance(self.weight, (list, tuple)):
-            if WEIGHT in self.weight: s.append(
-                    "\tg.eigenvectorCentrality();\n")
-            if CENTRALITY in self.weight: s.append(
-                    "\tg.betweennessCentrality();\n")
-        # Apply pruning.
-        if self.prune is not None: s.append(
-                    "\tg.prune(%s);\n" % self.prune)
         # Apply the layout settings.
         s.append(   "\tg.layout.k = %s; // Force constant (= edge length).\n"
                     "\tg.layout.force = %s; // Repulsive strength.\n"
@@ -1336,6 +1381,37 @@ class HTMLCanvasRenderer(object):
                         self.k, 
                         self.force, 
                         self.repulsion))
+        # Apply eigenvector, betweenness and degree centrality.
+        if self.weight is True: s.append(
+                    "\tg.eigenvectorCentrality();\n"
+                    "\tg.betweennessCentrality();\n"
+                    "\tg.degreeCentrality();\n")
+        if isinstance(self.weight, (list, tuple)):
+            if WEIGHT in self.weight: s.append(
+                    "\tg.eigenvectorCentrality();\n")
+            if CENTRALITY in self.weight: s.append(
+                    "\tg.betweennessCentrality();\n")
+            if DEGREE in self.weight: s.append(
+                    "\tg.degreeCentrality();\n")
+        # Apply node weight to node radius.
+        if self.pack: s.append(
+                    "\t// Apply Node.weight to Node.radius.\n"
+                    "\tfor (var i=0; i < g.nodes.length; i++) {\n"
+                        "\t\tvar n = g.nodes[i];\n"
+                        "\t\tn.radius = n.radius + n.radius * n.weight;\n"
+                    "\t}\n")
+        # Apply edge length (leaves get shorter edges).
+        if self.pack: s.append(
+                    "\t// Apply Edge.length (leaves get shorter edges).\n"
+                    "\tfor (var i=0; i < g.nodes.length; i++) {\n"
+                        "\t\tvar e = g.nodes[i].edges();\n"
+                        "\t\tif (e.length == 1) {\n"
+                        "\t\t\te[0].length *= 0.2;\n"
+                        "\t\t}\n"
+                    "\t}\n")
+        # Apply pruning.
+        if self.prune is not None: s.append(
+                    "\tg.prune(%s);\n" % self.prune)
         # Implement <canvas> draw().
         s.append("}\n")
         s.append("function draw(canvas) {\n"
@@ -1388,10 +1464,9 @@ class HTMLCanvasRenderer(object):
     @property
     def html(self):
         """ Yields a string of HTML to visualize the graph using a force-based spring layout.
-            The js parameter sets the path to graph.js and excanvas.js (by default, "./").
+            The js parameter sets the path to graph.js and canvas.js.
         """
-        js  = self.javascript.rstrip("/")
-        js  = (js and js or ".")+"/"
+        js  = self.javascript or ""
         if self.stylesheet == INLINE:
             css = self.style.replace("\n","\n\t\t").rstrip("\t")
             css = "<style type=\"text/css\">\n\t\t%s\n\t</style>" % css
@@ -1416,31 +1491,33 @@ class HTMLCanvasRenderer(object):
             s)
         return s
 
-    def render(self, type=HTML):
+    def serialize(self, type=HTML):
         if type == HTML:
             return self.html
         if type == CANVAS:
             return self.canvas
-        if type == STYLE:
+        if type in (STYLE, CSS):
             return self.style
         if type == SCRIPT:
             return self.script
         if type == DATA:
             return self.data
+    
+    # Backwards compatibility.
+    render = serialize
 
-    def export(self, path, overwrite=False, encoding="utf-8"):
+    def export(self, path, encoding="utf-8"):
         """ Generates a folder at the given path containing an index.html
             that visualizes the graph using the HTML5 <canvas> tag.
         """
-        if overwrite and os.path.exists(path):
+        if os.path.exists(path):
             rmtree(path)
-        os.mkdir(path) # With overwrite=False, raises OSError if the path already exists.
-        os.mkdir(os.path.join(path, "js"))
+        os.mkdir(path)
         # Copy compressed graph.js + canvas.js (unless a custom path is given.)
-        if self.javascript == "js/":
+        if self.javascript is None:
             for p, f in (("..", "canvas.js"), (".", "graph.js")):
                 a = open(os.path.join(MODULE, p, f), "r")
-                b = open(os.path.join(path, "js", f), "w")
+                b = open(os.path.join(path, f), "w")
                 b.write(minify(a.read()))
                 b.close()
         # Create style.css.
@@ -1453,22 +1530,97 @@ class HTMLCanvasRenderer(object):
         f.write(self.html)
         f.close()
 
-def render(graph, type=HTML, **kwargs):
-    renderer = HTMLCanvasRenderer(graph)
-    renderer.default.update(kwargs.get("default", {}))
-    kwargs["default"] = renderer.default
-    kwargs["stylesheet"] = kwargs.get("stylesheet", INLINE)
-    for k,v in kwargs.items():
-        if k in renderer.__dict__: 
-            renderer.__dict__[k] = v
-    return renderer.render(type)
+#--- GRAPH EXPORT: GRAPHML ------------------------------------------------------------------------
+# Exports graphs as GraphML XML, which can be read by Gephi (https://gephi.org).
+# Author: Frederik Elwert <frederik.elwert@web.de>, 2014.
 
-def export(graph, path, overwrite=False, encoding="utf-8", **kwargs):
-    renderer = HTMLCanvasRenderer(graph)
-    renderer.default.update(kwargs.get("default", {}))
-    kwargs["default"] = renderer.default
-    kwargs["stylesheet"] = kwargs.get("stylesheet", DEFAULT)
-    for k,v in kwargs.items():
-        if k in renderer.__dict__: 
-            renderer.__dict__[k] = v
-    return renderer.export(path, overwrite, encoding)
+GRAPHML = "graphml"
+
+class GraphMLRenderer(GraphRenderer):
+
+    def serialize(self, directed=False):
+        p = "tmp.graphml"
+        self.export(p, directed, encoding="utf-8")
+        s = open(p, encoding="utf-8").read()
+        os.unlink(p)
+        return s
+
+    def export(self, path, directed=False, encoding="utf-8"):
+        """ Generates a GraphML XML file at the given path.
+        """
+        import xml.etree.ElementTree as etree
+        ns = "{http://graphml.graphdrawing.org/xmlns}"
+        etree.register_namespace("", ns.strip("{}"))
+        # Define type for node labels (string).
+        # Define type for node edges (float).
+        root = etree.Element(ns + "graphml")
+        root.insert(0, etree.Element(ns + "key", **{
+            "id": "node_label", "for": "node", "attr.name": "label", "attr.type": "string"
+        }))
+        root.insert(0, etree.Element(ns + "key", **{
+            "id": "edge_weight", "for": "edge", "attr.name": "weight", "attr.type": "double"
+        }))
+        # Map Node.id => GraphML node id.
+        m = {}        
+        g = etree.SubElement(root, ns + "graph", id="g", edgedefault=directed and "directed" or "undirected")
+        # Export nodes.
+        for i, n in enumerate(self.graph.nodes):
+            m[n.id] = "node%s" % i
+            x = etree.SubElement(g, ns + "node", id=m[n.id])
+            x = etree.SubElement(x, ns + "data", key="node_label")
+            if n.text and n.text.string != n.id:
+                x.text = n.text.string
+        # Export edges.
+        for i, e in enumerate(self.graph.edges):
+            x = etree.SubElement(g, ns + "edge", id="edge%s" % i, source=m[e.node1.id], target=m[e.node2.id])
+            x = etree.SubElement(x, ns + "data", key="edge_weight")
+            x.text = "%.3f" % e.weight
+        # Export graph with pretty indented XML.
+        # http://effbot.org/zone/element-lib.htm#prettyprint
+        def indent(e, level=0):
+            w = "\n" + level * "  "
+            if len(e):
+                if not e.text or not e.text.strip():
+                    e.text = w + "  "
+                if not e.tail or not e.tail.strip():
+                    e.tail = w
+                for e in e:
+                    indent(e, level+1)
+                if not e.tail or not e.tail.strip():
+                    e.tail = w
+            else:
+                if level and (not e.tail or not e.tail.strip()):
+                    e.tail = w
+        indent(root)
+        tree = etree.ElementTree(root)
+        tree.write(path, encoding=encoding)
+
+#--------------------------------------------------------------------------------------------------
+# The export() and serialize() function are called from Graph.export() and Graph.serialize(),
+# and are expected to handle any GraphRenderer by specifying an optional type=HTML|GRAPHML.
+
+def export(graph, path, encoding="utf-8", **kwargs):
+    type = kwargs.pop("type", HTML)
+    # Export to GraphML.
+    if type == GRAPHML or path.endswith(".graphml"):
+        r = GraphMLRenderer(graph)
+        return r.export(path, directed=kwargs.get("directed", False), encoding=encoding)
+    # Export to HTML with <canvas>.
+    if type == HTML:
+        kwargs.setdefault("stylesheet", DEFAULT)
+        r = HTMLCanvasRenderer(graph, **kwargs)
+        return r.export(path, encoding)
+
+def serialize(graph, type=HTML, **kwargs):
+    # Return GraphML string.
+    if type == GRAPHML:
+        r = GraphMLRenderer(graph)
+        return r.serialize(directed=kwargs.get("directed", False))
+    # Return HTML string.
+    if type in (HTML, CANVAS, STYLE, CSS, SCRIPT, DATA):
+        kwargs.setdefault("stylesheet", INLINE)
+        r = HTMLCanvasRenderer(graph, **kwargs)
+        return r.serialize(type)
+    
+# Backwards compatibility.
+write, render = export, serialize
